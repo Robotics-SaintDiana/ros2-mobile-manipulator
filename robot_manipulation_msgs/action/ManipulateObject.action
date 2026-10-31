@@ -1,0 +1,11 @@
+# Goal
+string action_type
+string object_id
+string color
+---
+# Result
+bool success
+string message
+---
+# Feedback
+string stage

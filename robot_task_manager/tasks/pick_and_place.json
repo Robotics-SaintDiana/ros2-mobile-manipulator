@@ -1,0 +1,6 @@
+{
+  "task_id": "pick_irregular_object_to_red_tray",
+  "action": "pick_and_place",
+  "object": {"id": "irregular_object", "source": "pick_station"},
+  "destination": {"type": "tray", "color": "red", "location": "place_station"}
+}

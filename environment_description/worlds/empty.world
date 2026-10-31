@@ -1,0 +1,226 @@
+<sdf version='1.9'>
+  <world name='empty_world'>
+    <gravity>0 0 -9.8</gravity>
+    <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
+    <atmosphere type='adiabatic'/>
+    <physics type='ode'>
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+    <scene>
+      <ambient>0.4 0.4 0.4 1</ambient>
+      <background>0.7 0.7 0.7 1</background>
+      <shadows>true</shadows>
+    </scene>
+
+    <model name='boundary_fence'>
+      <static>true</static>
+      <pose>0 0 0 0 0 0</pose>
+      <link name='wall_north'>
+        <pose>0 7.5 0.5 0 0 0</pose>
+        <collision name='collision'><geometry><box><size>15.0 0.1 1.0</size></box></geometry></collision>
+        <visual name='visual'>
+          <geometry><box><size>15.0 0.1 1.0</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+      <link name='wall_south'>
+        <pose>0 -7.5 0.5 0 0 0</pose>
+        <collision name='collision'><geometry><box><size>15.0 0.1 1.0</size></box></geometry></collision>
+        <visual name='visual'>
+          <geometry><box><size>15.0 0.1 1.0</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+      <link name='wall_east'>
+        <pose>7.5 0 0.5 0 0 0</pose>
+        <collision name='collision'><geometry><box><size>0.1 15.0 1.0</size></box></geometry></collision>
+        <visual name='visual'>
+          <geometry><box><size>0.1 15.0 1.0</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+      <link name='wall_west'>
+        <pose>-7.5 0 0.5 0 0 0</pose>
+        <collision name='collision'><geometry><box><size>0.1 15.0 1.0</size></box></geometry></collision>
+        <visual name='visual'>
+          <geometry><box><size>0.1 15.0 1.0</size></box></geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name='internal_partitions'>
+      <static>true</static>
+      <pose>0 0 0 0 0 0</pose>
+      <link name='partition_north'>
+        <pose>0 2.5 0.5 0 0 0</pose>
+        <collision name='col_nw_1'><pose>-6.675 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry></collision>
+        <visual name='vis_nw_1'><pose>-6.675 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_nw_2'><pose>-3.325 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry></collision>
+        <visual name='vis_nw_2'><pose>-3.325 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_nc_1'><pose>-1.675 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry></collision>
+        <visual name='vis_nc_1'><pose>-1.675 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_nc_2'><pose>1.675 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry></collision>
+        <visual name='vis_nc_2'><pose>1.675 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_ne_1'><pose>3.325 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry></collision>
+        <visual name='vis_ne_1'><pose>3.325 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_ne_2'><pose>6.675 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry></collision>
+        <visual name='vis_ne_2'><pose>6.675 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+      </link>
+      <link name='partition_south'>
+        <pose>0 -2.5 0.5 0 0 0</pose>
+        <collision name='col_sw_1'><pose>-6.675 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry></collision>
+        <visual name='vis_sw_1'><pose>-6.675 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_sw_2'><pose>-3.325 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry></collision>
+        <visual name='vis_sw_2'><pose>-3.325 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_sc_1'><pose>-1.675 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry></collision>
+        <visual name='vis_sc_1'><pose>-1.675 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_sc_2'><pose>1.675 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry></collision>
+        <visual name='vis_sc_2'><pose>1.675 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_se_1'><pose>3.325 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry></collision>
+        <visual name='vis_se_1'><pose>3.325 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_se_2'><pose>6.675 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry></collision>
+        <visual name='vis_se_2'><pose>6.675 0 0 0 0 0</pose><geometry><box><size>1.55 0.1 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+      </link>
+      <link name='partition_west'>
+        <pose>-2.5 0 0.5 0 0 0</pose>
+        <collision name='col_wn_1'><pose>0 6.675 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry></collision>
+        <visual name='vis_wn_1'><pose>0 6.675 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_wn_2'><pose>0 3.325 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry></collision>
+        <visual name='vis_wn_2'><pose>0 3.325 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_wc_1'><pose>0 1.675 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry></collision>
+        <visual name='vis_wc_1'><pose>0 1.675 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_wc_2'><pose>0 -1.675 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry></collision>
+        <visual name='vis_wc_2'><pose>0 -1.675 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_ws_1'><pose>0 -3.325 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry></collision>
+        <visual name='vis_ws_1'><pose>0 -3.325 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_ws_2'><pose>0 -6.675 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry></collision>
+        <visual name='vis_ws_2'><pose>0 -6.675 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+      </link>
+      <link name='partition_east'>
+        <pose>2.5 0 0.5 0 0 0</pose>
+        <collision name='col_en_1'><pose>0 6.675 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry></collision>
+        <visual name='vis_en_1'><pose>0 6.675 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_en_2'><pose>0 3.325 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry></collision>
+        <visual name='vis_en_2'><pose>0 3.325 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_ec_1'><pose>0 1.675 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry></collision>
+        <visual name='vis_ec_1'><pose>0 1.675 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_ec_2'><pose>0 -1.675 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry></collision>
+        <visual name='vis_ec_2'><pose>0 -1.675 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_es_1'><pose>0 -3.325 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry></collision>
+        <visual name='vis_es_1'><pose>0 -3.325 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+        <collision name='col_es_2'><pose>0 -6.675 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry></collision>
+        <visual name='vis_es_2'><pose>0 -6.675 0 0 0 0</pose><geometry><box><size>0.1 1.55 1.0</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.7 0.7 0.7 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- 分拣工作台（带红、绿、蓝三色托盘，放在西侧房间） -->
+    <model name='sorting_workbench'>
+      <static>true</static>
+      <pose>-5.5 0 0 0 0 -1.57</pose>
+      <link name='table_top'>
+        <pose>0 0 0.525 0 0 0</pose>
+        <collision name='col'><geometry><box><size>1.2 0.8 0.05</size></box></geometry></collision>
+        <visual name='vis'>
+          <geometry><box><size>1.2 0.8 0.05</size></box></geometry>
+          <material><ambient>0.25 0.25 0.25 1</ambient><diffuse>0.35 0.35 0.35 1</diffuse></material>
+        </visual>
+      </link>
+      <link name='tray_red'>
+        <pose>0.3 0.2 0.555 0 0 0</pose>
+        <collision name='col'><geometry><box><size>0.25 0.25 0.04</size></box></geometry></collision>
+        <visual name='vis'>
+          <geometry><box><size>0.25 0.25 0.04</size></box></geometry>
+          <material><ambient>0.9 0.1 0.1 1</ambient><diffuse>1.0 0.2 0.2 1</diffuse></material>
+        </visual>
+      </link>
+      <link name='tray_green'>
+        <pose>0 0.2 0.555 0 0 0</pose>
+        <collision name='col'><geometry><box><size>0.25 0.25 0.04</size></box></geometry></collision>
+        <visual name='vis'>
+          <geometry><box><size>0.25 0.25 0.04</size></box></geometry>
+          <material><ambient>0.1 0.9 0.1 1</ambient><diffuse>0.2 1.0 0.2 1</diffuse></material>
+        </visual>
+      </link>
+      <link name='tray_blue'>
+        <pose>-0.3 0.2 0.555 0 0 0</pose>
+        <collision name='col'><geometry><box><size>0.25 0.25 0.04</size></box></geometry></collision>
+        <visual name='vis'>
+          <geometry><box><size>0.25 0.25 0.04</size></box></geometry>
+          <material><ambient>0.1 0.1 0.9 1</ambient><diffuse>0.2 0.2 1.0 1</diffuse></material>
+        </visual>
+      </link>
+      <link name='leg1'><pose>0.53 0.35 0.25 0 0 0</pose><collision name='c'><geometry><cylinder><radius>0.03</radius><length>0.5</length></cylinder></geometry></collision><visual name='v'><geometry><cylinder><radius>0.03</radius><length>0.5</length></cylinder></geometry><material><ambient>0.7 0.7 0.7 1</ambient></material></visual></link>
+      <link name='leg2'><pose>0.53 -0.35 0.25 0 0 0</pose><collision name='c'><geometry><cylinder><radius>0.03</radius><length>0.5</length></cylinder></geometry></collision><visual name='v'><geometry><cylinder><radius>0.03</radius><length>0.5</length></cylinder></geometry><material><ambient>0.7 0.7 0.7 1</ambient></material></visual></link>
+      <link name='leg3'><pose>-0.53 0.35 0.25 0 0 0</pose><collision name='c'><geometry><cylinder><radius>0.03</radius><length>0.5</length></cylinder></geometry></collision><visual name='v'><geometry><cylinder><radius>0.03</radius><length>0.5</length></cylinder></geometry><material><ambient>0.7 0.7 0.7 1</ambient></material></visual></link>
+      <link name='leg4'><pose>-0.53 -0.35 0.25 0 0 0</pose><collision name='c'><geometry><cylinder><radius>0.03</radius><length>0.5</length></cylinder></geometry></collision><visual name='v'><geometry><cylinder><radius>0.03</radius><length>0.5</length></cylinder></geometry><material><ambient>0.7 0.7 0.7 1</ambient></material></visual></link>
+    </model>
+
+    <!-- 物料工作台（放在北侧房间） -->
+    <model name='material_workbench_north'>
+      <static>true</static>
+      <pose>0 5.5 0 0 0 0</pose>
+      <link name='table_top'>
+        <pose>0 0 0.525 0 0 0</pose>
+        <collision name='col'><geometry><box><size>1.2 0.8 0.05</size></box></geometry></collision>
+        <visual name='vis'>
+          <geometry><box><size>1.2 0.8 0.05</size></box></geometry>
+          <material><ambient>0.25 0.25 0.25 1</ambient><diffuse>0.35 0.35 0.35 1</diffuse></material>
+        </visual>
+      </link>
+      <link name='leg1'><pose>0.53 0.35 0.25 0 0 0</pose><collision name='c'><geometry><cylinder><radius>0.03</radius><length>0.5</length></cylinder></geometry></collision><visual name='v'><geometry><cylinder><radius>0.03</radius><length>0.5</length></cylinder></geometry><material><ambient>0.7 0.7 0.7 1</ambient></material></visual></link>
+      <link name='leg2'><pose>0.53 -0.35 0.25 0 0 0</pose><collision name='c'><geometry><cylinder><radius>0.03</radius><length>0.5</length></cylinder></geometry></collision><visual name='v'><geometry><cylinder><radius>0.03</radius><length>0.5</length></cylinder></geometry><material><ambient>0.7 0.7 0.7 1</ambient></material></visual></link>
+      <link name='leg3'><pose>-0.53 0.35 0.25 0 0 0</pose><collision name='c'><geometry><cylinder><radius>0.03</radius><length>0.5</length></cylinder></geometry></collision><visual name='v'><geometry><cylinder><radius>0.03</radius><length>0.5</length></cylinder></geometry><material><ambient>0.7 0.7 0.7 1</ambient></material></visual></link>
+      <link name='leg4'><pose>-0.53 -0.35 0.25 0 0 0</pose><collision name='c'><geometry><cylinder><radius>0.03</radius><length>0.5</length></cylinder></geometry></collision><visual name='v'><geometry><cylinder><radius>0.03</radius><length>0.5</length></cylinder></geometry><material><ambient>0.7 0.7 0.7 1</ambient></material></visual></link>
+    </model>
+
+    <!-- 不规则抓取物体（放在北侧物料桌上） -->
+    <model name="irregular_composite_object">
+      <pose>0 5.32 0.575 0 0 0</pose>
+      <link name="link">
+        <inertial><mass>0.3</mass><inertia><ixx>0.001</ixx><iyy>0.001</iyy><izz>0.001</izz></inertia></inertial>
+        <collision name="col_box"><geometry><box><size>0.06 0.06 0.06</size></box></geometry></collision>
+        <visual name="vis_box"><geometry><box><size>0.06 0.06 0.06</size></box></geometry></visual>
+        <collision name="col_cyl"><pose>0.02 0 0.04 0 0.785 0</pose><geometry><cylinder><radius>0.015</radius><length>0.08</length></cylinder></geometry></collision>
+        <visual name="vis_cyl"><pose>0.02 0 0.04 0 0.785 0</pose><geometry><cylinder><radius>0.015</radius><length>0.08</length></cylinder></geometry><material><ambient>1 0 0 1</ambient><diffuse>1 0 0 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <model name='ground_plane'>
+      <static>true</static>
+      <link name='link'>
+        <collision name='collision'><geometry><plane><normal>0 0 1</normal><size>1 1</size></plane></geometry></collision>
+        <visual name='visual'>
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+          <material><ambient>0.8 0.8 0.8 1</ambient><diffuse>0.8 0.8 0.8 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <light name='sun' type='directional'>
+      <pose>0 0 10 0 -0 0</pose>
+      <cast_shadows>true</cast_shadows>
+      <direction>-0.5 0.1 -0.9</direction>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+    </light>
+  </world>
+</sdf>

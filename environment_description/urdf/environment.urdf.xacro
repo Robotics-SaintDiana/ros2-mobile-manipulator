@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<robot name="environment" xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <!-- 1. 显式声明环境的根节点：world -->
+  <link name="world"/>
+
+  <!-- 深度相机 realsense d455 引入 -->
+  <xacro:include filename="$(find robot_description)/urdf/_d455.urdf.xacro" />
+
+  <!-- 3. 实例化物料桌上方的顶视相机 -->
+  <xacro:sensor_d455 parent="world" name="pick_camera" use_nominal_extrinsics="true" use_mesh="true">
+    <origin xyz="0 5.45 1.5" rpy="0 1.57 -1.57"/>
+  </xacro:sensor_d455>
+
+  <!-- 4. 实例化放置桌上方的顶视相机 -->
+  <xacro:sensor_d455 parent="world" name="place_camera" use_nominal_extrinsics="true" use_mesh="true">
+    <origin xyz="-5.3 -0.05 1.5" rpy="0 1.57 0"/>
+  </xacro:sensor_d455>
+</robot>

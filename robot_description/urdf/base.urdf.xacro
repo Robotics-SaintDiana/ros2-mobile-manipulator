@@ -1,0 +1,60 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro">
+  
+  <xacro:macro name="base" params="parent *joint_origin">
+    <joint name="base_link_joint" type="fixed">
+      <xacro:insert_block name="joint_origin"/>
+      <parent link="${parent}"/>
+      <child link="base_link"/>
+    </joint>
+
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <mesh filename="package://robot_description/meshes/collision/base_link.stl" scale="3 3 3"/>
+      </geometry>
+      <material name="dark_grey">
+        <color rgba="0.2 0.2 0.2 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="0.66 0.66 0.18"/>
+      </geometry>
+      <origin xyz="0 0 0.03" rpy="0 0 0"/>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0"/>
+      <mass value="216.0"/> 
+    <inertia ixx="0.3888" ixy="0" ixz="0" iyy="0.3888" iyz="0" izz="0.7776"/>
+    </inertial>
+          <surface>
+            <friction>
+              <ode>
+                <mu>0.8</mu>
+                <mu2>0.8</mu2>
+                <kp>1e15</kp>
+                <kd>1e13</kd>
+              </ode>
+            </friction>
+            <bounce>
+              <restitution_coefficient>0.01</restitution_coefficient>
+              <threshold>10</threshold>
+            </bounce>
+            <contact>
+              <ode>
+                <max_vel>0.01</max_vel>
+                <minDepth>0</minDepth>
+                <contact_surface_layer>0</contact_surface_layer>
+              </ode>
+            </contact>
+          </surface>
+  </link>
+
+  <gazebo reference="base_link">
+    <material>Gazebo/DarkGrey</material>
+  </gazebo>
+
+  </xacro:macro>
+  
+</robot>

@@ -1,0 +1,12 @@
+# Goal
+string object_id
+string color
+---
+# Result
+bool success
+string message
+geometry_msgs/PoseStamped[] grasp_poses
+float32[] scores
+---
+# Feedback
+string stage

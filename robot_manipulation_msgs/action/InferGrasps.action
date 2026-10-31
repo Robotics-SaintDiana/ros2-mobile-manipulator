@@ -1,0 +1,11 @@
+# Goal
+sensor_msgs/PointCloud2 cloud
+---
+# Result
+bool success
+string message
+geometry_msgs/PoseStamped[] grasp_poses
+float32[] scores
+---
+# Feedback
+string stage
