@@ -192,15 +192,25 @@
       <link name='leg4'><pose>-0.53 -0.35 0.25 0 0 0</pose><collision name='c'><geometry><cylinder><radius>0.03</radius><length>0.5</length></cylinder></geometry></collision><visual name='v'><geometry><cylinder><radius>0.03</radius><length>0.5</length></cylinder></geometry><material><ambient>0.7 0.7 0.7 1</ambient></material></visual></link>
     </model>
 
-    <!-- 不规则抓取物体（放在北侧物料桌上） -->
-    <model name="irregular_composite_object">
-      <pose>0 5.32 0.575 0 0 0</pose>
+    <!-- 圆柱体抓取物体（放在北侧物料桌上） -->
+    <model name="tall_cylinder_object">
+      <pose>0 5.32 0.585 0 0 0</pose>
       <link name="link">
         <inertial><mass>0.3</mass><inertia><ixx>0.001</ixx><iyy>0.001</iyy><izz>0.001</izz></inertia></inertial>
-        <collision name="col_box"><geometry><box><size>0.06 0.06 0.06</size></box></geometry></collision>
-        <visual name="vis_box"><geometry><box><size>0.06 0.06 0.06</size></box></geometry></visual>
-        <collision name="col_cyl"><pose>0.02 0 0.04 0 0.785 0</pose><geometry><cylinder><radius>0.015</radius><length>0.08</length></cylinder></geometry></collision>
-        <visual name="vis_cyl"><pose>0.02 0 0.04 0 0.785 0</pose><geometry><cylinder><radius>0.015</radius><length>0.08</length></cylinder></geometry><material><ambient>1 0 0 1</ambient><diffuse>1 0 0 1</diffuse></material></visual>
+        <collision name="col">
+          <geometry>
+            <cylinder><radius>0.025</radius><length>0.18</length></cylinder>
+          </geometry>
+        </collision>
+        <visual name="vis">
+          <geometry>
+            <cylinder><radius>0.025</radius><length>0.18</length></cylinder>
+          </geometry>
+          <material>
+            <ambient>1 0 0 1</ambient>
+            <diffuse>1 0 0 1</diffuse>
+          </material>
+        </visual>
       </link>
     </model>
 

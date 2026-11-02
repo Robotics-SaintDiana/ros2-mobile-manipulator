@@ -7,6 +7,7 @@
 #include <pcl/features/moment_of_inertia_estimation.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_eigen/tf2_eigen.hpp>
 
 // 内联函数：将 RGB 颜色空间转换为 HSV 颜色空间
 inline void rgbToHsv(uint8_t r, uint8_t g, uint8_t b, float& h, float& s, float& v) {
@@ -86,24 +87,244 @@ PerceptionExecutor::PerceptionExecutor(const rclcpp::Node::SharedPtr& node) : no
         "/perception/hand_camera_pcl_cloud_pub", 
         10
     );
+
+    // 3. 初始化 TF2 监听器
+    tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_->get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
+    // 4. 读取默认参数
+    loadParameters();
 }
 
-// ----- 获取抓取固定相机的点云数据进行处理 -----
-void PerceptionExecutor::pickCameraPointCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg) {
-    // 调用辅助函数，获取最新的点云数据
-    processAndPublishCloud(msg, pick_camera_cloud_mutex_, pick_camera_latest_processed_cloud_, pick_camera_pcl_cloud_pub_);
+// ----- 将手部相机三次拍摄到的点云数据进行融合 -----
+sensor_msgs::msg::PointCloud2 PerceptionExecutor::getHandCameraFusionCloud(const std::vector<sensor_msgs::msg::PointCloud2>& camera_clouds) {
+    // 1. 对传入的点云数据进行有效性判断，不能为空；为空则返回空点云
+    if (camera_clouds.empty()) {
+        RCLCPP_ERROR(node_->get_logger(), "Received empty cloud list for fusion!");
+        return sensor_msgs::msg::PointCloud2();
+    }
+
+    // 2. 创建用于存放合并后原始点云的容器
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr fusion_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
+
+    // 3. 循环遍历所有点云，直接转为 PCL 格式并累加
+    for (const auto& camera_cloud : camera_clouds) {
+        // 如果传入的点云存在为空的情况，该点云不进行任何处理
+        if (camera_cloud.data.empty()) continue;
+
+        // 如果传入的点云数据的 frame_id 错误，跳过此次操作
+        if (camera_cloud.header.frame_id != "panda_link0") {
+            RCLCPP_ERROR(node_->get_logger(), "Cloud frame mismatch! Expected panda_link0, got: %s", camera_cloud.header.frame_id.c_str());
+            continue;
+        }
+
+        // 将 ROS 消息转为 PCL 格式
+        pcl::PointCloud<pcl::PointXYZRGB>::Ptr transformed_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
+        pcl::fromROSMsg(camera_cloud, *transformed_cloud); 
+
+        // 累加到全局容器中
+         *fusion_cloud += *transformed_cloud;
+    }
+
+    // 防止传入的所有点云全为空
+    if (fusion_cloud->empty()) {
+        RCLCPP_ERROR(node_->get_logger(), "All input clouds are empty after conversion!");
+        return sensor_msgs::msg::PointCloud2();
+    }
+
+    // 4. 进行体素网格滤波降采样，清理重叠区域冗余点
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr downsampling_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
+    pcl::VoxelGrid<pcl::PointXYZRGB> voxel;
+    voxel.setLeafSize(static_cast<float>(fusion_voxel_size_),
+                      static_cast<float>(fusion_voxel_size_),
+                      static_cast<float>(fusion_voxel_size_));
+    voxel.setInputCloud(fusion_cloud);
+    voxel.filter(*downsampling_cloud);
+
+    if (downsampling_cloud->size() < 50) {
+        RCLCPP_ERROR(node_->get_logger(), "Too few points after voxel filtering: %zu", downsampling_cloud->size());
+        return sensor_msgs::msg::PointCloud2();
+    }
+
+    // 5. 从降采样的桌面中识别出桌面，并以此为基准进行工作空间裁减，保留桌面及上方的物体点云(保留桌子用于在 GraspNet 中进行碰撞检测)
+    // 5.1 利用 RANSAC 算法拟合桌面平面
+    float table_z = 0.0f;
+    bool has_table_plane = false;
+
+    pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients());   // 存放平面参数的容器（Ax + By + Cz + D = 0 里的 A, B, C, D）
+    pcl::PointIndices::Ptr inliers(new pcl::PointIndices());                  // 存放属于桌面的点的索引的容器
+    pcl::SACSegmentation<pcl::PointXYZRGB> seg;                               // 实例化 PCL 的 RANSAC 平面分割对象
+    seg.setOptimizeCoefficients(true);                                        // 优化拟合系数
+    seg.setModelType(pcl::SACMODEL_PLANE);                                    // 设置寻找类型为平面
+    seg.setMethodType(pcl::SAC_RANSAC);                                       // 设置求解类型为 RANSAC 算法
+    seg.setMaxIterations(100);                                                // 设置最大迭代次数
+    seg.setDistanceThreshold(0.015f);                                         // 如果某个点到拟合平面的距离小于 1cm，认为该点属于桌面  
+    seg.setInputCloud(downsampling_cloud);                                    // 传入原始点云数据
+    seg.segment(*inliers, *coefficients);                                     // 执行分割
+
+    // 要求桌子的点云数量最少要为 50，点云数量多的话，要求桌子的点云数量要达到总点数的 10% 以上
+    const size_t min_inliers = std::max<size_t>(50, downsampling_cloud->size() / 10);
+
+    // 确认点云数量足够，且 RANSAC 算法返回的参数合理
+    if (inliers->indices.size() >= min_inliers && coefficients->values.size() >= 4) {
+        // 拟合桌面的法向量进行校验
+        const float a = coefficients->values[0];
+        const float b = coefficients->values[1];
+        const float c = coefficients->values[2];
+        const float norm = std::sqrt(a * a + b * b + c * c);
+
+        // 桌子一定是水平的，故法向量应几乎平行于 Z 轴，如果其 Z 轴分量过小，代表有可能识别到了墙面或者物体侧面
+        if (norm > 1e-5f && std::abs(c) / norm > 0.8f) {
+            // 获取贴合桌面点的 Z 坐标，计算其中位数作为桌面高度
+            std::vector<float> inlier_zs;
+            inlier_zs.reserve(inliers->indices.size());
+            for (int index : inliers->indices) {
+                inlier_zs.push_back((*downsampling_cloud)[index].z);
+            }
+            std::nth_element(inlier_zs.begin(),
+                                inlier_zs.begin() + inlier_zs.size() / 2,
+                                inlier_zs.end());
+            table_z = inlier_zs[inlier_zs.size() / 2];
+            has_table_plane = true;
+
+            RCLCPP_INFO(node_->get_logger(), "Table plane: %zu inliers, table_z = %.3f m",
+                        inlier_zs.size(), table_z);
+        }
+    }
+
+    // 如果没有在点云中识别到桌面，为了避免裁切掉物体的点云，用最低 5% 分位的点云高度作为默认的桌面高度
+    if (!has_table_plane) {
+        // 获取所有降采样完后的点云的 Z 方向高度
+        std::vector<float> all_zs;
+        all_zs.reserve(downsampling_cloud->size());
+        for (const auto& point : *downsampling_cloud) {
+            all_zs.push_back(point.z);
+        }
+
+        // 计算最低 5% 分位的位置索引，并将该数据作为桌面高度
+        const size_t index = all_zs.size() * 30 / 100;
+        std::nth_element(all_zs.begin(), all_zs.begin() + index, all_zs.end());
+        table_z = all_zs[index];
+
+        RCLCPP_WARN(node_->get_logger(), "Table plane not found, fallback table_z = %.3f m", table_z);
+    }
+
+    // 5.2 仅统计位于桌面上方 1cm 以上的点，计算其几何中心作为桌面物体的大致中心
+    double center_x = 0.0;
+    double center_y = 0.0;
+    size_t object_point_count = 0;
+
+    for (const auto& point : *downsampling_cloud) {
+        if (point.z > table_z + 0.01f) {
+            center_x += point.x;
+            center_y += point.y;
+            ++object_point_count;
+        }
+    }
+    const bool has_object = object_point_count >= 30;
+    if (has_object) {
+        center_x /= static_cast<double>(object_point_count);
+        center_y /= static_cast<double>(object_point_count);
+    } else {
+        RCLCPP_WARN(node_->get_logger(), "Too few points above the table, skip xy workspace cropping.");
+    }
+
+    // 5.3 基于上述计算的数据进行工作空间裁减，保留桌面及上方的物体点云
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr workspace_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
+    workspace_cloud->reserve(downsampling_cloud->size());
+
+    // Z 轴下界多保留一点，防止贴在桌面表面的点被误切掉
+    const float z_min = table_z - static_cast<float>(workspace_table_margin_);
+    const float z_max = table_z + static_cast<float>(workspace_max_height_);
+    const double half_extent = workspace_half_extent_;
+
+    // 筛选点云
+    for (const auto& point : *downsampling_cloud) {
+        // 过滤无效点
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {
+            continue;
+        }
+
+        // 高度方向过滤
+        if (point.z < z_min || point.z > z_max) {
+            continue;
+        }
+
+        // 水平方向过滤
+        if (has_object &&
+            (std::abs(point.x - center_x) > half_extent || std::abs(point.y - center_y) > half_extent)) {
+            continue;
+        }
+
+        workspace_cloud->push_back(point);
+    }
+
+    RCLCPP_INFO(node_->get_logger(),
+                "Fusion: %zu raw -> %zu voxel -> %zu workspace points (table kept)",
+                fusion_cloud->size(), downsampling_cloud->size(), workspace_cloud->size());
+
+    // 如果最后的点云总数少于设定值，可能点云中压根没东西，不再传递给 GraspNet 推理
+    if (static_cast<int>(workspace_cloud->size()) < fusion_min_points_) {
+        RCLCPP_ERROR(node_->get_logger(), "Workspace cloud too small: %zu points (min %d)",
+                     workspace_cloud->size(), fusion_min_points_);
+        return sensor_msgs::msg::PointCloud2();
+    }
+
+    // 6. 转换回 sensor_msgs 返回
+    sensor_msgs::msg::PointCloud2 output_cloud;
+    pcl::toROSMsg(*workspace_cloud, output_cloud);
+    output_cloud.header.stamp = node_->now();
+    output_cloud.header.frame_id = "panda_link0";
+
+    return output_cloud;
 }
 
-// ----- 获取放置固定相机的点云数据进行处理 -----
-void PerceptionExecutor::placeCameraPointCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg) {
-    // 调用辅助函数，获取最新的点云数据
-    processAndPublishCloud(msg, place_camera_cloud_mutex_, place_camera_latest_processed_cloud_, place_camera_pcl_cloud_pub_);
-}
+// ----- 获取 pick 相机识别到的物体的中心位置 -----
+// TODO：此处函数默认桌面上仅有一个物体，后期有较多物体时需要加入物体 id 识别和校验
+bool PerceptionExecutor::getObjectCenterPosition(geometry_msgs::msg::PoseStamped& object_pose) {
+    // 1. 先获取 pick 相机最新的点云数据
+    sensor_msgs::msg::PointCloud2 pick_camera_lasted_cloud;
+    if (!getPickCameraLatestProcessedCloud(pick_camera_lasted_cloud)) {
+        RCLCPP_ERROR(node_->get_logger(), "Can not get latest pick camera cloud!");
+        return false;
+    }
 
-// ----- 获取手部相机的点云数据进行处理 -----
-void PerceptionExecutor::handCameraPointCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg) {
-    // 调用辅助函数，获取最新的点云数据
-    processAndPublishCloud(msg, hand_camera_cloud_mutex_, hand_camera_latest_processed_cloud_, hand_camera_pcl_cloud_pub_);
+    // 2. 去除点云数据中的桌面部分
+    auto pick_camera_lasted_cloud_ptr = std::make_shared<sensor_msgs::msg::PointCloud2>(pick_camera_lasted_cloud);
+    sensor_msgs::msg::PointCloud2 filiter_cloud = processAndPublishCloud(pick_camera_lasted_cloud_ptr);
+    if (filiter_cloud.data.empty()) {
+        RCLCPP_ERROR(node_->get_logger(), "Pick camera filter cloud is empty!");
+        return false;
+    }
+
+    // 3. 计算物体的中心位置作为物体的大致位置
+    // 3.1 首先先将过滤后的点云数据转为 PCL 原生点云
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
+    pcl::fromROSMsg(filiter_cloud, *pcl_cloud);
+    if (pcl_cloud->empty()) {
+        RCLCPP_ERROR(node_->get_logger(), "PCL cloud is empty after conversion!");
+        return false;
+    }
+
+    // 3.2 计算三维平均坐标
+    Eigen::Vector4f centroid;
+    pcl::compute3DCentroid(*pcl_cloud, centroid);
+
+    // 3.3 返回物体的中心位置(frame_id 为 pick_camera_depth_optical_frame)
+    object_pose.header.frame_id = "pick_camera_depth_optical_frame";
+    object_pose.header.stamp = pick_camera_lasted_cloud.header.stamp;
+
+    object_pose.pose.position.x = centroid[0];
+    object_pose.pose.position.y = centroid[1];
+    object_pose.pose.position.z = centroid[2];
+
+    // 默认四元数为数值向下(因为此处仅仅是配合抓取物体时识别大致中心位置，不需要很精确)
+    object_pose.pose.orientation.x = 0.0;
+    object_pose.pose.orientation.y = 0.0;
+    object_pose.pose.orientation.z = 0.0;
+    object_pose.pose.orientation.w = 1.0;
+
+    return true;
 }
 
 // ----- 获取指定颜色托盘的放置位姿 -----
@@ -230,8 +451,9 @@ bool PerceptionExecutor::getPlaceCameraLatestProcessedCloud(sensor_msgs::msg::Po
     return true;
 }
 
-// ----- 返回放置固定相机最新处理好的点云数据 -----
-bool PerceptionExecutor::getHandCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& hand_camera_lasted_cloud) {
+// ----- 返回手部相机最新处理好的点云数据，并转换到 panda_link0 坐标系下 -----
+bool PerceptionExecutor::getHandCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& panda_link0_lasted_cloud) {
+    sensor_msgs::msg::PointCloud2 hand_camera_lasted_cloud;
     {
         std::lock_guard<std::mutex> lock(hand_camera_cloud_mutex_);
 
@@ -244,23 +466,140 @@ bool PerceptionExecutor::getHandCameraLatestProcessedCloud(sensor_msgs::msg::Poi
         // 返回存储的最新点云数据
         hand_camera_lasted_cloud = hand_camera_latest_processed_cloud_;
     }
+
+    // 直接在此处将获取到的手部相机点云数据转换到 panda_link0 下，首先获取两者之间的 tf 变换
+    // 先按点云自身时间戳查，该方法最为精确；如果查询不到则采用当前时刻的 tf 变换替代，因为机械臂保持静止，所以两者基本上等价
+    // 先检查查询到的点云数据的 frame_id 是否合法，防止后续查询 tf 变换出错
+    const std::string cloud_frame_id =  hand_camera_lasted_cloud.header.frame_id;
+    if (cloud_frame_id.empty() || cloud_frame_id != "hand_camera_depth_optical_frame") {
+        RCLCPP_ERROR(node_->get_logger(), "Invalid hand camera cloud frame_id: '%s'", cloud_frame_id.c_str());
+        return false;
+    }
+
+    geometry_msgs::msg::TransformStamped transform_stamped;
+    bool is_transform_found = false;
+
+    // 先按点云自身时间戳查
+    try {
+        transform_stamped = tf_buffer_->lookupTransform(
+            "panda_link0", cloud_frame_id,
+            rclcpp::Time(hand_camera_lasted_cloud.header.stamp, node_->get_clock()->get_clock_type()));
+
+        // 标志位置位
+        is_transform_found = true;    
+    } catch (const tf2::TransformException &) {}
+
+    // 未查询到再采用当前时刻的 tf 变换
+    if (!is_transform_found) {
+        try {
+            transform_stamped = tf_buffer_->lookupTransform(
+                "panda_link0",
+                cloud_frame_id,
+                tf2::TimePointZero
+            );
+        } catch (const tf2::TransformException& ex) {
+            RCLCPP_ERROR(node_->get_logger(), "Failed to get latest TF: %s", ex.what());
+            return false;
+        }
+    }
+
+    // 将 ROS 消息转为 PCL 格式
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
+    pcl::fromROSMsg(hand_camera_lasted_cloud, *pcl_cloud);
+    if (pcl_cloud->empty()) {
+        RCLCPP_ERROR(node_->get_logger(), "Converted hand camera cloud is empty!");
+        return false;
+    }
+
+    // 再转换到 panda_link0 坐标系下
+    Eigen::Matrix4f transform_matrix = tf2::transformToEigen(transform_stamped).matrix().cast<float>();
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr transformed_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
+    pcl::transformPointCloud(*pcl_cloud, *transformed_cloud, transform_matrix);
+    if (transformed_cloud->empty()) {
+        RCLCPP_ERROR(node_->get_logger(), "Transformed hand camera cloud is empty!");
+        return false;
+    }
+
+    // 最后将 PCL 点云转回 ROS
+    pcl::toROSMsg(*transformed_cloud, panda_link0_lasted_cloud);
+    panda_link0_lasted_cloud.header.frame_id = "panda_link0";
+    panda_link0_lasted_cloud.header.stamp = hand_camera_lasted_cloud.header.stamp;
+
     return true;
 }
 
-// ----- 点云回调函数的辅助函数，基于 PCL 库对相机点云进行桌面去除，保存并发布最新的点云数据 -----
-void PerceptionExecutor::processAndPublishCloud(
-            const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg,
-            std::mutex& mutex,
-            sensor_msgs::msg::PointCloud2& latest_cloud,
-            const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr& publisher)
-{
+// ----- 读取可调参数 -----
+void PerceptionExecutor::loadParameters() {
+    // 检查节点中是否含有指定的参数，存在则获得其当前值，不存在则设置为默认值
+    auto get_double = [this](const std::string& name, double default_value) -> double {
+        if (!node_->has_parameter(name)) {
+            return node_->declare_parameter<double>(name, default_value);
+        }
+        return node_->get_parameter(name).as_double();
+    };
+
+    hand_camera_min_range_  = get_double("hand_camera_min_range", 0.08);
+    hand_camera_max_range_  = get_double("hand_camera_max_range", 1.20);
+    fusion_voxel_size_      = get_double("fusion_voxel_size", 0.005);
+    workspace_half_extent_  = get_double("workspace_half_extent", 0.30);
+    workspace_max_height_   = get_double("workspace_max_height", 0.50);
+    workspace_table_margin_ = get_double("workspace_table_margin", 0.03);
+
+    if (!node_->has_parameter("fusion_min_points")) {
+        fusion_min_points_ = node_->declare_parameter<int>("fusion_min_points", 100);
+    } else {
+        fusion_min_points_ = static_cast<int>(node_->get_parameter("fusion_min_points").as_int());
+    }
+}
+
+// ----- 获取抓取固定相机的点云数据进行处理 -----
+void PerceptionExecutor::pickCameraPointCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg) {
+    // 调用辅助函数，获取最新的点云数据
+    sensor_msgs::msg::PointCloud2 output_ros_cloud = processAndPublishCloud(msg);
+
+    // 存储最新的点云信息，并将其发布出去
+    {
+        std::lock_guard<std::mutex> lock(pick_camera_cloud_mutex_);
+        pick_camera_latest_processed_cloud_ = output_ros_cloud;
+    }
+    pick_camera_pcl_cloud_pub_->publish(output_ros_cloud);
+}
+
+// ----- 获取放置固定相机的点云数据进行处理 -----
+void PerceptionExecutor::placeCameraPointCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg) {
+    // 调用辅助函数，获取最新的点云数据
+    sensor_msgs::msg::PointCloud2 output_ros_cloud = processAndPublishCloud(msg);
+
+    // 存储最新的点云信息，并将其发布出去
+    {
+        std::lock_guard<std::mutex> lock(place_camera_cloud_mutex_);
+        place_camera_latest_processed_cloud_ = output_ros_cloud;
+    }
+    place_camera_pcl_cloud_pub_->publish(output_ros_cloud);
+}
+
+// ----- 获取手部相机的点云数据进行处理 -----
+void PerceptionExecutor::handCameraPointCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg) {
+    // 调用辅助函数，获取最新的点云数据
+    // sensor_msgs::msg::PointCloud2 output_ros_cloud = processAndPublishCloud(msg);
+
+    // 存储最新的点云信息，并将其发布出去
+    {
+        std::lock_guard<std::mutex> lock(hand_camera_cloud_mutex_);
+        hand_camera_latest_processed_cloud_ = *msg;
+    }
+    hand_camera_pcl_cloud_pub_->publish(*msg);
+}
+
+// ----- 基于 PCL 库对相机点云进行桌面去除 -----
+sensor_msgs::msg::PointCloud2 PerceptionExecutor::processAndPublishCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg) {
     // 1. 将 ROS 的 sensor_msgs::msg::PointCloud2 转换为 PCL 原生点云
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
     pcl::fromROSMsg(*msg, *pcl_cloud);
 
     if (pcl_cloud->empty()) {
         RCLCPP_WARN(node_->get_logger(), "Converted PCL point cloud is empty, skipping current processing.");
-        return;
+        return sensor_msgs::msg::PointCloud2();
     }
 
     // 2. 利用 RANSAC 拟合桌面方程，去除桌面部分
@@ -314,7 +653,7 @@ void PerceptionExecutor::processAndPublishCloud(
     // 4. 检查点云数量
     if (object_cloud->size() < 50) {
         RCLCPP_WARN(node_->get_logger(), "当前场景中未提取到足够的物体 3D 点云！");
-        return;
+        return sensor_msgs::msg::PointCloud2();
     }
 
     // 5. 转换为 ROS 消息
@@ -322,10 +661,5 @@ void PerceptionExecutor::processAndPublishCloud(
     pcl::toROSMsg(*object_cloud, output_ros_cloud);
     output_ros_cloud.header = msg->header; 
 
-    // 6. 存储最新的点云信息，并将其发布出去
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        latest_cloud = output_ros_cloud;
-    }
-    publisher->publish(output_ros_cloud);
+    return output_ros_cloud;
 }

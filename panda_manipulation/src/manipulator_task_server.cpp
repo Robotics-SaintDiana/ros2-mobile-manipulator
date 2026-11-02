@@ -137,22 +137,20 @@ class ManipulatorTaskServer : public rclcpp::Node
             
             // 情况一：需要执行 Pick 指令
             if (task_goal->action_type == "pick") {
-                // // 1. 先获取手部相机的点云数据
-                // sensor_msgs::msg::PointCloud2 hand_camera_lasted_cloud;
-                // if (!perception_executor_->getHandCameraLatestProcessedCloud(hand_camera_lasted_cloud)) {
-                //     return;
-                // }
+                // 1. 控制机械臂获取物体的点云数据
+                sensor_msgs::msg::PointCloud2 filiter_cloud;
+                if (!getFusionResult(filiter_cloud)) return;
 
-                // // 2. 将获取到的最新点云数据传给 graspnet 进行推理，获取相应的抓取位姿
-                // if (!getGraspnetResult(hand_camera_lasted_cloud, grasp_result)) return;
+                // 2. 将获取到的最新点云数据传给 graspnet 进行推理，获取相应的抓取位姿
+                if (!getGraspnetResult(filiter_cloud, grasp_result)) return;
 
-                // geometry_msgs::msg::PoseStamped pick_pose;
-                // pick_pose.pose.position = grasp_result->grasp_poses[0].pose.position;
-                // pick_pose.pose.orientation = grasp_result->grasp_poses[0].pose.orientation;
-                // pick_pose.header.frame_id = "hand_camera_depth_optical_frame";
-                // pick_pose.header.stamp = this->now();
-                // // 3. 测试：先将分数最高的抓取位姿交由机械臂执行(执行前其实应该检验一下数据是否正确，这部分可以放在机械臂中检验)
-                // if (!manipulator_executor_->pickExecutor(pick_pose)) return;
+                geometry_msgs::msg::PoseStamped pick_pose;
+                pick_pose.pose.position = grasp_result->grasp_poses[0].pose.position;
+                pick_pose.pose.orientation = grasp_result->grasp_poses[0].pose.orientation;
+                pick_pose.header.frame_id = "hand_camera_depth_optical_frame";
+                pick_pose.header.stamp = this->now();
+                // 3. 测试：先将分数最高的抓取位姿交由机械臂执行(执行前其实应该检验一下数据是否正确，这部分可以放在机械臂中检验)
+                if (!manipulator_executor_->pickExecutor(pick_pose)) return;
             } 
             
             // 情况二：需要执行 Place 指令
@@ -171,6 +169,54 @@ class ManipulatorTaskServer : public rclcpp::Node
             goal_handle->succeed(manipulate_result);
         }
 
+        // -------------------------------------
+        // ------------ 辅助函数部分 -------------
+        // -------------------------------------
+        // 控制机械臂在三个不同的位置获取三份点云数据，并将这些点云数据进行融合
+        bool getFusionResult(sensor_msgs::msg::PointCloud2& filiter_cloud) {
+            // 1. 利用顶部相机获取目标物体的大致位置
+            geometry_msgs::msg::PoseStamped object_pose;
+            if (!perception_executor_->getObjectCenterPosition(object_pose)) {
+                RCLCPP_ERROR(this->get_logger(), "Failed to calculate object's center position!");
+                return false;
+            }
+
+            // 2. 根据顶部相机获取的位置计算三次拍摄中，机械臂应该到达的位置
+            std::vector<geometry_msgs::msg::PoseStamped> arm_poses;
+            arm_poses.resize(3);
+            getObservationPoses(arm_poses, object_pose);
+
+            // 3. 控制机械臂运动至指定位置，每运动到一个地方就获取一次点云数据
+            std::vector<sensor_msgs::msg::PointCloud2> object_clouds;
+            for (int i = 0; i < 3; i++) {  
+                // 先控制机械臂运动到指定的位置，因为运动是阻塞式的，只有全部完成了才会返回 
+                if (!manipulator_executor_->armMoveExecutor(arm_poses[i])) return false;
+
+                // 稍微延时一下，等待仿真稳定且获取到了最新的点云数据
+                rclcpp::sleep_for(std::chrono::seconds(2));
+
+                // 获取点云数据
+                sensor_msgs::msg::PointCloud2 hand_camera_cloud;
+                if (!perception_executor_->getHandCameraLatestProcessedCloud(hand_camera_cloud)) {
+                    RCLCPP_ERROR(this->get_logger(), "Failed to capture point cloud at pose %d", i);
+                    return false;
+                }
+
+                object_clouds.push_back(hand_camera_cloud);
+            }
+
+            // 4. 将点云数据进行融合
+            filiter_cloud = perception_executor_->getHandCameraFusionCloud(object_clouds);
+            if (filiter_cloud.data.empty()) {
+                RCLCPP_ERROR(this->get_logger(), "Hand camera fusion cloud is empty!");
+                return false;
+            }
+
+            return true;
+        }
+
+
+        // 向 GraspNet 中传入点云数据，获取 GraspNet 返回的推理结果
         bool getGraspnetResult(const sensor_msgs::msg::PointCloud2& cloud, std::shared_ptr<InferGrasps::Result>& grasp_result) {
             // 1. 检查 Graspnet 服务器是否准备完毕
             if (!graspnet_client_->wait_for_action_server(std::chrono::seconds(5))) {
@@ -221,6 +267,58 @@ class ManipulatorTaskServer : public rclcpp::Node
             grasp_result->grasp_poses = graspnet_inference_result->grasp_poses;
             grasp_result->scores = graspnet_inference_result->scores;
             return true;
+        }
+
+        // 根据相机获取到的物体中心位置，生成相机拍摄的三个位姿
+        void getObservationPoses(std::vector<geometry_msgs::msg::PoseStamped>& arm_poses, const geometry_msgs::msg::PoseStamped& object_pose) {
+            // 提取中心坐标
+            double cx = object_pose.pose.position.x;
+            double cy = object_pose.pose.position.y;
+            double cz = object_pose.pose.position.z;
+
+            // 定义拍摄时的安全高度偏移
+            double standoff_z = 0.35;                    // 在 Z 轴上，相机距离物体的安全高度
+            double x_offset = 0.2;                      // 左右两个视角相对于正上方俯视视角，在左右上偏置 15cm
+            double y_offset = 0.05;
+            double tilt_angle = 45.0 * M_PI / 180.0;     // 左右两个视角相对于正上方俯视视角，在 Z 轴上倾斜 30 度向内看
+
+            // -----------------------------------------------------------------
+            // 1. 中间视角（Center）：正上方俯视
+            // -----------------------------------------------------------------
+            // 仅在竖直方向上向上抬升，仍然保持向下的俯视姿态
+            arm_poses[0].pose.position.x = cx;
+            arm_poses[0].pose.position.y = cy;
+            arm_poses[0].pose.position.z = cz - standoff_z;
+
+            tf2::Quaternion q_center;
+            q_center.setRPY(0.0, 0.0, M_PI / 2);
+            arm_poses[0].pose.orientation = tf2::toMsg(q_center);
+
+            // -----------------------------------------------------------------
+            // 2. 左侧视角（Left）：位于左侧，向右倾斜 30 度
+            // -----------------------------------------------------------------
+            arm_poses[1].pose.position.x = cx + x_offset;
+            arm_poses[1].pose.position.y = cy - y_offset;
+            arm_poses[1].pose.position.z = cz - standoff_z;
+
+            tf2::Quaternion q_left;
+            q_left.setRPY(0.0, -tilt_angle + M_PI / 2, -M_PI);
+            arm_poses[1].pose.orientation = tf2::toMsg(q_left);
+
+            // -----------------------------------------------------------------
+            // 3. 右侧视角（Right）：位于右侧，向左倾斜 30 度
+            // -----------------------------------------------------------------
+            arm_poses[2].pose.position.x = cx - x_offset;
+            arm_poses[2].pose.position.y = cy - y_offset;
+            arm_poses[2].pose.position.z = cz - standoff_z;
+
+            tf2::Quaternion q_right;
+            q_right.setRPY(0.0, tilt_angle, 0.0);
+            arm_poses[2].pose.orientation = tf2::toMsg(q_right);
+
+            for (auto& arm_pose : arm_poses) {
+                arm_pose.header.frame_id = object_pose.header.frame_id;
+            }
         }
 };
 

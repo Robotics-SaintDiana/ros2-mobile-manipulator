@@ -25,7 +25,7 @@ aluminum peripherial evaluation case.
   <!-- Includes -->
   <xacro:include filename="$(find robot_description)/urdf/_materials.urdf.xacro" />
 
-  <xacro:macro name="sensor_d455" params="parent *origin name:=camera use_nominal_extrinsics:=false use_mesh:=true">
+  <xacro:macro name="sensor_d455" params="parent *origin name:=camera use_nominal_extrinsics:=false use_mesh:=true near:=0.4 far:=6.0">
     <xacro:arg name="add_plug" default="false" />
     <xacro:property name="M_PI" value="3.1415926535897931" />
 
@@ -236,8 +236,8 @@ aluminum peripherial evaluation case.
             <format>R8G8B8</format>
           </image>
           <clip>
-            <near>0.4</near>
-            <far>6.0</far>   
+            <near>${near}</near>
+            <far>${far}</far>   
           </clip>
         </camera>
       </sensor>

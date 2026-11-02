@@ -4,9 +4,12 @@
 #include <rclcpp/rclcpp.hpp>
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include <geometry_msgs/msg/pose.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 #include <mutex>
 #include <string>
 
@@ -17,28 +20,31 @@ class PerceptionExecutor
         explicit PerceptionExecutor(const rclcpp::Node::SharedPtr& node);
 
         // 对外暴露的接口
-        // getPickCameraLatestProcessedCloud 操作 --- 返回抓取固定相机最新处理好的点云数据
-        bool getPickCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& pick_camera_lasted_cloud);
+        // 将手部相机在三个方向进行拍摄的点云数据进行融合
+        sensor_msgs::msg::PointCloud2 getHandCameraFusionCloud(const std::vector<sensor_msgs::msg::PointCloud2>& camera_clouds);
 
-        // getPlaceCameraLatestProcessedCloud 操作 --- 返回放置固定相机最新处理好的点云数据
-        bool getPlaceCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& place_camera_lasted_cloud);
-
-        // getHandCameraLatestProcessedCloud 操作 --- 返回手部固定相机最新处理好的点云数据
-        bool getHandCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& hand_camera_lasted_cloud);
-
-        // getPlatePosition 操作 --- 返回指定颜色托盘位置
+        // 返回 pick 相机识别到的物体的中心位置
+        bool getObjectCenterPosition(geometry_msgs::msg::PoseStamped& object_pose);
+        
+        // 返回指定颜色托盘位置
         bool getPlatePosition(const std::string& plate_color, geometry_msgs::msg::Pose& place_pose);
 
+        // 返回相机最新处理好的点云数据
+        bool getPickCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& pick_camera_lasted_cloud);
+        bool getPlaceCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& place_camera_lasted_cloud);
+        bool getHandCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& panda_link0_lasted_cloud);
+
     private:
-        // 点云回调函数及相关辅助函数
+        // 读取本类的可调参数
+        void loadParameters();
+
+        // 点云回调函数
         void pickCameraPointCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg);
         void placeCameraPointCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg);
         void handCameraPointCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg);
-        
-        void processAndPublishCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg,
-                                    std::mutex& mutex,
-                                    sensor_msgs::msg::PointCloud2& latest_cloud,
-                                    const rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr& publisher);
+
+        // 去除输入点云中的桌面
+        sensor_msgs::msg::PointCloud2 processAndPublishCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& msg);
 
         // ----- ROS & PCL 句柄 -----
         rclcpp::Node::SharedPtr node_;
@@ -56,6 +62,19 @@ class PerceptionExecutor
         mutable std::mutex pick_camera_cloud_mutex_;
         mutable std::mutex place_camera_cloud_mutex_;
         mutable std::mutex hand_camera_cloud_mutex_;
+
+        // ----- 用来获取 TF 变换 -----
+        std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+        std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+
+        // ----- 可调参数 -----
+        double hand_camera_min_range_   = 0.08;   // 手相机单帧：太近的点（手指/镜片）丢掉
+        double hand_camera_max_range_   = 1.20;   // 手相机单帧：太远的点（背景/地面）丢掉
+        double fusion_voxel_size_       = 0.005;  // 融合时的体素边长
+        double workspace_half_extent_   = 0.30;   // 工作空间在 xy 方向的半边长
+        double workspace_max_height_    = 0.50;   // 工作空间在桌面上方的高度
+        double workspace_table_margin_  = 0.015;  // 工作空间在桌面下方保留的厚度（保证桌面点不被裁掉）
+        int    fusion_min_points_       = 100;    // 融合后少于这个点数就认为失败
 };
 
 #endif

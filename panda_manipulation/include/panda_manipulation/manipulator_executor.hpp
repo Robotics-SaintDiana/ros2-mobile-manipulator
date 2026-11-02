@@ -17,12 +17,15 @@ class ManipulatorExecutor
         // 构造函数
         explicit ManipulatorExecutor(const rclcpp::Node::SharedPtr& node);
 
-        // 对外只暴露两个接口，只允许服务端调用 Pick 操作或者 Place 操作
-        // Pick 操作 --- 从物料台上抓取需要进行抓取操作的物体
+        // 对外暴露接口
+        // 从物料台上抓取物体
         bool pickExecutor(const geometry_msgs::msg::PoseStamped& pick_pose);
 
-        // Place 操作 --- 将物体放置在放置台上
+        // 将物体放置在放置台上
         bool placeExecutor(const geometry_msgs::msg::PoseStamped& place_pose);
+
+        // 控制机械臂运动至指定位姿处
+        bool armMoveExecutor(const geometry_msgs::msg::PoseStamped& arm_pose);
 
     private:
         // ----- 机械臂运动辅助方法 -----

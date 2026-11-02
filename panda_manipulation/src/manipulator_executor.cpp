@@ -20,6 +20,7 @@ ManipulatorExecutor::ManipulatorExecutor(const rclcpp::Node::SharedPtr& node) : 
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 }
 
+// ----- 控制机械臂从物料台上按照指定位姿抓取物体 -----
 bool ManipulatorExecutor::pickExecutor(const geometry_msgs::msg::PoseStamped& pick_pose) {
     // 1. 先判断当前时刻机器人是否可用
     // if (!isRobotReady()) return false;
@@ -31,9 +32,7 @@ bool ManipulatorExecutor::pickExecutor(const geometry_msgs::msg::PoseStamped& pi
     // 3. 对转换后的抓取位姿进行有效性判断
     if (!isPoseValidate(pick_pose_link0)) return false;
 
-    // // ==========================================
-    // // 4. 核心改进：根据抓取位姿自身的姿态提取下探方向
-    // // ==========================================
+    // 4. 根据抓取位姿自身的姿态提取下探方向
     tf2::Quaternion q;
     tf2::fromMsg(pick_pose_link0.pose.orientation, q);
     tf2::Matrix3x3 rot_matrix(q);
@@ -41,36 +40,38 @@ bool ManipulatorExecutor::pickExecutor(const geometry_msgs::msg::PoseStamped& pi
     // 获取当前抓取姿态下的本地 Z 轴（下探方向）在 panda_link0 下的单位方向向量
     tf2::Vector3 approach_dir = rot_matrix.getColumn(2);
 
-    // 设置退回距离（例如 15 厘米）
+    // 设置退回距离
     double approach_distance = 0.15; 
 
-    // 5. 构造预抓取点：沿着下探方向的“反方向”退回指定距离
+    // 5. 沿着下探方向的反方向退回指定距离
     geometry_msgs::msg::PoseStamped pre_pick_pose = pick_pose_link0;
     pre_pick_pose.pose.position.x -= approach_distance * approach_dir.x();
     pre_pick_pose.pose.position.y -= approach_distance * approach_dir.y();
     pre_pick_pose.pose.position.z -= approach_distance * approach_dir.z();
 
-    // 4. 移动至预抓取位置
+    // 6. 移动至预抓取位置
     if (!moveArmToPose(pre_pick_pose, false)) return false;
 
-    // 5. 打开架爪
+    // 7. 打开架爪
     if (!controlGripper(true)) return false;
 
-    // 6. 下降至物体抓取位置
+    // 8. 下降至物体抓取位置
     if (!moveArmToPose(pick_pose_link0, true)) return false;
 
-    // 7. 关闭夹爪抓取物体
+    // TODO：此处缺少物体被真正抓取的判断，需要补充
+    // 9. 关闭夹爪抓取物体
     if (!controlGripper(false)) return false;
 
-    // 8s. 抬升机械臂至 Home 位置
+    // 10. 抬升机械臂至 Home 位置
     if (!moveArmToJoints(home_joints)) return false;
 
     return true;
 }
 
+// ----- 控制机械臂向放置台上放置物体 -----
 bool ManipulatorExecutor::placeExecutor(const geometry_msgs::msg::PoseStamped& place_pose) {
     // 1. 先判断当前时刻机器人是否可用
-    if (!isRobotReady()) return false;
+    // if (!isRobotReady()) return false;
 
     // 2. 将感知模块传入的抓取位姿转换到 panda_link0 坐标系下
     geometry_msgs::msg::PoseStamped place_pose_link0;
@@ -84,6 +85,24 @@ bool ManipulatorExecutor::placeExecutor(const geometry_msgs::msg::PoseStamped& p
     geometry_msgs::msg::PoseStamped final_pose = place_pose_link0;
     final_pose.pose.position.z -= 0.2;
     if (!moveArmToPose(final_pose, true)) return false;
+
+    return true;
+}
+
+// ----- 控制机械臂运动至指定位置 -----
+bool ManipulatorExecutor::armMoveExecutor(const geometry_msgs::msg::PoseStamped& arm_pose) {
+    // 1. 先判断当前时刻机器人是否可用
+    // if (!isRobotReady()) return false;
+
+    // 2. 将感知模块传入的抓取位姿转换到 panda_link0 坐标系下(为了复用之前的代码，考虑到这里没有涉及 GraspNet，传入 place 参数)
+    geometry_msgs::msg::PoseStamped arm_pose_link0;
+    if (!validateAndTransformPose(arm_pose, arm_pose_link0, "place")) return false;
+
+    // 3. 对转换后的抓取位姿进行有效性判断
+    if (!isPoseValidate(arm_pose_link0)) return false;
+
+    // 4. 控制机械臂运动至指定位置
+    if (!moveArmToPose(arm_pose_link0)) return false;
 
     return true;
 }
@@ -118,6 +137,9 @@ bool ManipulatorExecutor::moveArmToPose(const geometry_msgs::msg::PoseStamped & 
         }
     } else {
         // --- 普通自由路径规划 ---
+        arm_group_->setStartStateToCurrentState();
+        arm_group_->setPlanningTime(5.0);              
+        arm_group_->setNumPlanningAttempts(10);
         arm_group_->clearPoseTargets();
         arm_group_->setPoseTarget(target_pose.pose);
         success = (arm_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
@@ -325,44 +347,40 @@ bool ManipulatorExecutor::validateAndTransformPose(const geometry_msgs::msg::Pos
         return false;
     }
 
-    // 6. 根据输入的任务阶段不同,分别计算相应的坐标变换关系
+    // 6. 根据输入的任务阶段不同，分别计算相应的相机到 TCP 的变换关系
     tf2::Transform tf_link0_to_link8;
     if (task_stage == "pick") {
         // pick 工作阶段需要构建 Graspnet TCP 坐标系与自定义 TCP 坐标系之间的变换关系
         // 因为 Graspnet TCP 坐标系与自定义的 TCP 坐标系不同，前者以 X 轴作为夹爪下探方向，而后者则以 Z 轴为下探方向
-        tf2::Transform tf_grasptcp_to_tcp;
-        tf2::Matrix3x3 rot_matrix(
+        tf2::Transform tf_link0_to_grasptcp;
+        tf2::fromMsg(input_pose_stamped.pose, tf_link0_to_grasptcp);
+
+        static const tf2::Matrix3x3 rot_matrix(
             0.0, 0.0, 1.0,  
             0.0, 1.0, 0.0,  
             -1.0, 0.0, 0.0
         );
+        tf2::Transform tf_grasptcp_to_tcp;
         tf_grasptcp_to_tcp.setBasis(rot_matrix);
         tf_grasptcp_to_tcp.setOrigin(tf2::Vector3(0.0, 0.0, 0.0));
 
-        // 6.1 计算转换到 panda_link0 下的抓取位姿
-        tf2::Transform tf_camera_to_grasptcp;
-        tf2::fromMsg(input_pose_stamped.pose, tf_camera_to_grasptcp);
-        tf_link0_to_link8 = tf_link0_to_camera * tf_camera_to_grasptcp * tf_grasptcp_to_tcp * tf_tcp_to_link8;
+        // 组合得到最终的相机到自定义 TCP 的变换
+        tf_link0_to_link8 = tf_link0_to_grasptcp * tf_grasptcp_to_tcp * tf_tcp_to_link8;
     } else if (task_stage == "place") {
-        // place 工作阶段不需要构建 Graspnet TCP 坐标系与自定义 TCP 坐标系之间的变换关系,但需要指定抓取位姿竖直向下
+        // place 工作阶段不需要构建 Graspnet TCP 坐标系与自定义 TCP 坐标系之间的变换关系，按照相机指定的位姿即可
         tf2::Transform tf_camera_to_tcp;
         tf2::fromMsg(input_pose_stamped.pose, tf_camera_to_tcp);
-
-        // 指定抓取位姿竖直向下
-        tf2::Quaternion q;
-        q.setRPY(0.0, 0.0, 0.0);
-        tf_camera_to_tcp.setRotation(q);
-
         tf_link0_to_link8 = tf_link0_to_camera * tf_camera_to_tcp * tf_tcp_to_link8;
+    } else {
+        RCLCPP_ERROR(node_->get_logger(), "Unknown task stage: %s", task_stage.c_str());
+        return false;
     }
 
-    // 将 tf2::Transform 转回 geometry_msgs::msg::Pose 供 MoveIt 使用
+    // 8. 统一将结果转回 geometry_msgs 供 MoveIt 使用
     output_pose_stamped.pose.position.x = tf_link0_to_link8.getOrigin().x();
     output_pose_stamped.pose.position.y = tf_link0_to_link8.getOrigin().y();
     output_pose_stamped.pose.position.z = tf_link0_to_link8.getOrigin().z();
-
-    tf2::Quaternion q_link8 = tf_link0_to_link8.getRotation();
-    output_pose_stamped.pose.orientation = tf2::toMsg(q_link8);
+    output_pose_stamped.pose.orientation = tf2::toMsg(tf_link0_to_link8.getRotation());
 
     output_pose_stamped.header.frame_id = "panda_link0";
     output_pose_stamped.header.stamp = input_pose_stamped.header.stamp;
