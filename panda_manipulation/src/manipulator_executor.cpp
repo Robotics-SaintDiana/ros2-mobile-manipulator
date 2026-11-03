@@ -18,6 +18,24 @@ ManipulatorExecutor::ManipulatorExecutor(const rclcpp::Node::SharedPtr& node) : 
     // 3. 初始化 TF2 监听器
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
+    // 4. 初始化 Moveit 场景规划器
+    planning_scene_interface_ = std::make_shared<moveit::planning_interface::PlanningSceneInterface>();
+
+    // ---------- M0-5 诊断：规划框架 / IK 求解器 / 起始状态 ----------
+        RCLCPP_INFO(node_->get_logger(), "[M0][INIT] planning frame = %s",
+                    arm_group_->getPlanningFrame().c_str());
+
+        auto init_state = arm_group_->getCurrentState(1.0);
+        if (!init_state) {
+            RCLCPP_ERROR(node_->get_logger(),
+                         "[M0][INIT] cannot get robot state at startup "
+                         "(joint_states 可能还没来)");
+        } else {
+            const auto* jmg = init_state->getRobotModel()->getJointModelGroup("panda_arm");
+            RCLCPP_INFO(node_->get_logger(), "[M0][INIT] panda_arm IK solver = %s",
+                        (jmg && jmg->getSolverInstance()) ? "PRESENT" : "MISSING");
+        }
 }
 
 // ----- 控制机械臂从物料台上按照指定位姿抓取物体 -----
@@ -25,44 +43,51 @@ bool ManipulatorExecutor::pickExecutor(const geometry_msgs::msg::PoseStamped& pi
     // 1. 先判断当前时刻机器人是否可用
     // if (!isRobotReady()) return false;
 
-    // 2. 将感知模块传入的抓取位姿转换到 panda_link0 坐标系下
+    // 2. 判断感知模块传入的抓取位姿是否合理，并转换到获得 Link0 坐标系下末端执行器 Link8 的位姿
     geometry_msgs::msg::PoseStamped pick_pose_link0;
     if (!validateAndTransformPose(pick_pose, pick_pose_link0, "pick")) return false;
 
     // 3. 对转换后的抓取位姿进行有效性判断
     if (!isPoseValidate(pick_pose_link0)) return false;
 
-    // 4. 根据抓取位姿自身的姿态提取下探方向
+    // 4. 三段式抓取物体
+    // 4.1 根据抓取位姿自身的姿态提取下探方向(TCP 下探方向为 Z 轴)
     tf2::Quaternion q;
     tf2::fromMsg(pick_pose_link0.pose.orientation, q);
     tf2::Matrix3x3 rot_matrix(q);
-
-    // 获取当前抓取姿态下的本地 Z 轴（下探方向）在 panda_link0 下的单位方向向量
     tf2::Vector3 approach_dir = rot_matrix.getColumn(2);
 
-    // 设置退回距离
-    double approach_distance = 0.15; 
+    // 4.2 定义一个偏移函数，其中 d > 0 表示沿着接近物体的方向走，d < 0 表示沿着远离物体的方向走
+    auto offset_along = [&](const geometry_msgs::msg::PoseStamped& pose_base, double d) {
+        geometry_msgs::msg::PoseStamped p = pose_base;
+        p.pose.position.x += d * approach_dir.x();
+        p.pose.position.y += d * approach_dir.y();
+        p.pose.position.z += d * approach_dir.z();
+        return p;
+    };
 
-    // 5. 沿着下探方向的反方向退回指定距离
-    geometry_msgs::msg::PoseStamped pre_pick_pose = pick_pose_link0;
-    pre_pick_pose.pose.position.x -= approach_distance * approach_dir.x();
-    pre_pick_pose.pose.position.y -= approach_distance * approach_dir.y();
-    pre_pick_pose.pose.position.z -= approach_distance * approach_dir.z();
+    // 4.3 定义三段式抓取中的高度参数
+    const double hover_height   = 0.30;    // 高空悬停：距抓取点 30cm 的空域
+    const double pregrasp_above = 0.12;    // 预抓取：指尖悬在抓取点上方 12cm
 
-    // 6. 移动至预抓取位置
-    if (!moveArmToPose(pre_pick_pose, false)) return false;
+    // 4.4 三段式第一段：先运动至物体上方安全距离处
+    if (!moveArmToPose(offset_along(pick_pose_link0, -hover_height), false)) return false;
 
-    // 7. 打开架爪
+    // 4.5 在悬停位置打开夹爪
     if (!controlGripper(true)) return false;
 
-    // 8. 下降至物体抓取位置
+    // 4.6 三段式第二段：直线下降到预抓取点
+    if (!moveArmToPose(offset_along(pick_pose_link0, -pregrasp_above), true)) return false;
+
+    // 4.7 三段式第三段：继续直线下降到真正的抓取点
     if (!moveArmToPose(pick_pose_link0, true)) return false;
 
     // TODO：此处缺少物体被真正抓取的判断，需要补充
-    // 9. 关闭夹爪抓取物体
+    // 5. 关闭夹爪抓取物体
     if (!controlGripper(false)) return false;
 
-    // 10. 抬升机械臂至 Home 位置
+    // 6. 先抬升机械臂至安全位置，再回到 Home 点，防止腕部旋转造成物体和桌面等碰撞
+    if (!moveArmToPose(offset_along(pick_pose_link0, -0.25), true)) return false;
     if (!moveArmToJoints(home_joints)) return false;
 
     return true;
@@ -103,6 +128,38 @@ bool ManipulatorExecutor::armMoveExecutor(const geometry_msgs::msg::PoseStamped&
 
     // 4. 控制机械臂运动至指定位置
     if (!moveArmToPose(arm_pose_link0)) return false;
+
+    return true;
+}
+
+// // 向 Moveit 的规划场景中添加物体，防止机械臂与其发生碰撞
+bool ManipulatorExecutor::prepareCollisionScene(double center_x, double center_y) {
+    // 向 Moveit 的规划场景中添加桌子
+    moveit_msgs::msg::CollisionObject pick_table;
+    pick_table.header.frame_id = "panda_link0";
+    pick_table.id = "table";
+
+    // 将桌子抽象为一个三维的长方体
+    // 这里长方体的大小并不和桌子实际大小完全一致，是按照机械臂大致能够接触到的位置来设置的，防止桌面和机械臂过近
+    shape_msgs::msg::SolidPrimitive pick_table_box;
+    pick_table_box.type = shape_msgs::msg::SolidPrimitive::BOX;
+    pick_table_box.dimensions.resize(3);
+    pick_table_box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_X] = pick_table_size_x_;
+    pick_table_box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Y] = pick_table_size_y_;
+    pick_table_box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z] = table_thickness_;
+
+    // 设置长方体在 panda_link0 下的具体位置
+    geometry_msgs::msg::Pose pick_table_box_pose;
+    pick_table_box_pose.position.x = center_x;
+    pick_table_box_pose.position.y = center_y;
+    pick_table_box_pose.position.z = table_top_z_ - table_thickness_ / 2.0;
+    pick_table_box_pose.orientation.w = 1.0;
+
+    // 将几何体放入 Moveit 的规划场景之中
+    pick_table.primitives.push_back(pick_table_box);
+    pick_table.primitive_poses.push_back(pick_table_box_pose);
+    pick_table.operation = moveit_msgs::msg::CollisionObject::ADD;
+    planning_scene_interface_->applyCollisionObject(pick_table);
 
     return true;
 }
@@ -273,7 +330,8 @@ bool ManipulatorExecutor::validateAndTransformPose(const geometry_msgs::msg::Pos
     const std::string& pick_camera_frame = "pick_camera_depth_optical_frame";
     const std::string& place_camera_frame = "place_camera_depth_optical_frame";
     const std::string& hand_camera_frame = "hand_camera_depth_optical_frame";
-    if (source_frame.empty() || (source_frame != pick_camera_frame && source_frame != place_camera_frame && source_frame != hand_camera_frame)) {
+    const std::string& link_frame = "panda_link0";
+    if (source_frame.empty() || (source_frame != pick_camera_frame && source_frame != place_camera_frame && source_frame != hand_camera_frame && source_frame != link_frame)) {
         RCLCPP_ERROR(node_->get_logger(), "Pose transform failed: input frame_id is empty or error!");
         return false;
     }

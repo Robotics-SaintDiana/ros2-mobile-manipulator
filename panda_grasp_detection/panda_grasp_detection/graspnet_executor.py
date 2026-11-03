@@ -53,7 +53,7 @@ class GraspNetNode(Node):
         # 3.1 声明参数
         default_checkpoint = os.path.join(GRASPNET_ROOT, "checkpoint", "checkpoint-rs.tar")
         self.declare_parameter("checkpoint_path", default_checkpoint)
-        self.declare_parameter("num_point", 20000)
+        self.declare_parameter("num_point", 1024)
         self.declare_parameter("collision_thresh", 0.01)
         self.declare_parameter("voxel_size", 0.01)
         self.declare_parameter("depth_offset_scale", 1.0)
@@ -173,7 +173,33 @@ class GraspNetNode(Node):
                 self.get_logger().warn("过滤无效坐标后，剩余点云数量不足！")
                 return [], []
 
-            cloud_sampled = cloud_np  
+            # ---------------- 网络输入前置处理 ----------------
+            # 传入的点云中很大一部分是桌面，这里先将桌面去除，仅将物体点云进行推理
+            # 需要先备份一份原始点云，后续碰撞检测还需要含有桌面的点云
+            cloud_all = cloud_np.copy()
+
+            # 用 RANSAC 算法做平面分割，提取出不在桌面上的点
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(cloud_np.astype(np.float64))
+            plane_model, inliers = pcd.segment_plane(
+                distance_threshold=0.008, ransac_n=3, num_iterations=500)
+            cloud_obj = np.asarray(
+                pcd.select_by_index(inliers, invert=True).points, dtype=np.float32)
+
+            # 如果去掉平面后剩下的点太少，就回退使用原始点云
+            if len(cloud_obj) < 100:
+                cloud_obj = cloud_np
+           
+            # 计算当前物体点云的质心，仅保留物体附近的点云
+            center = cloud_obj.mean(axis=0)
+            cloud_obj = cloud_obj[
+                np.linalg.norm(cloud_obj - center, axis=1) < 0.15]
+
+            # 采样到固定点数
+            num_point = int(self.get_parameter("num_point").value)
+            replace = len(cloud_obj) < num_point
+            idxs = np.random.choice(len(cloud_obj), num_point, replace=replace)
+            cloud_sampled = cloud_obj[idxs]
 
             # 5.3 构造网络输入 (Batch size = 1, Shape: [1, N, 3])
             cloud_tensor = torch.from_numpy(cloud_sampled[np.newaxis, ...]).to(self.device)
@@ -196,22 +222,7 @@ class GraspNetNode(Node):
                 return [], []
 
             # 5.5 抓取候选去重与排序
-            gg.nms()
             gg.sort_by_score()
-
-            if len(gg) == 0:
-                self.get_logger().warn("抓取候选经过 NMS 处理后为空！")
-                return [], []
-
-            # 5.6 碰撞检测
-            if self.collision_thresh > 0:
-                mfcdetector = ModelFreeCollisionDetector(cloud_np, voxel_size=self.voxel_size)
-                collision_mask = mfcdetector.detect(gg, approach_dist=0.05, collision_thresh=self.collision_thresh)
-                gg = gg[~collision_mask]
-
-            if len(gg) == 0:
-                self.get_logger().warn("经过碰撞检测后，未找到任何可行的抓取位姿！")
-                return [], []
 
             # 抓取候选后处理
             n_network = len(gg)
@@ -230,7 +241,7 @@ class GraspNetNode(Node):
             # 剔除可能导致碰撞，或者空抓的位姿点
             if self.collision_thresh > 0.0:
                 # 初始化无模型碰撞检测器开始碰撞检测
-                mfcdetector = ModelFreeCollisionDetector(cloud_np, voxel_size=self.voxel_size)
+                mfcdetector = ModelFreeCollisionDetector(cloud_all, voxel_size=self.voxel_size)
 
                 # 开启空抓检测
                 if self.enable_empty_check:
@@ -261,69 +272,63 @@ class GraspNetNode(Node):
             # NMS 去重
             gg = gg.nms()
             gg.sort_by_score()
-            n_nms = len(gg)
-
-            self.get_logger().info(
-                f"候选过滤: 网络 {n_network} -> 分数前{self.pre_collision_top} {n_top}"
-                f" -> 分数门槛 {n_score} -> 碰撞/空抓 {n_collision} -> NMS {n_nms}"
-            )
 
             # --------------------------------------------------------------
-            try:
-                o3d_cloud = o3d.geometry.PointCloud()
-                o3d_cloud.points = o3d.utility.Vector3dVector(cloud_np)
+            # try:
+            #     o3d_cloud = o3d.geometry.PointCloud()
+            #     o3d_cloud.points = o3d.utility.Vector3dVector(cloud_np)
 
-                # 设置点云颜色
-                if len(colors_np) == len(cloud_np):
-                    o3d_cloud.colors = o3d.utility.Vector3dVector(colors_np)
+            #     # 设置点云颜色
+            #     if len(colors_np) == len(cloud_np):
+            #         o3d_cloud.colors = o3d.utility.Vector3dVector(colors_np)
 
-                if len(gg) == 0:
-                    self.get_logger().warn(
-                        "GraspNet 没有检测到有效抓取，跳过 Open3D 可视化"
-                    )
-                else:
+            #     if len(gg) == 0:
+            #         self.get_logger().warn(
+            #             "GraspNet 没有检测到有效抓取，跳过 Open3D 可视化"
+            #         )
+            #     else:
 
-                    # 获取前 5 个抓取（如果总数小于 5，Python 的切片会自动取到最大可用数量）
-                    num_to_show = min(5, len(gg))
-                    top_grasps = gg[0:num_to_show]
+            #         # 获取前 5 个抓取（如果总数小于 5，Python 的切片会自动取到最大可用数量）
+            #         num_to_show = min(5, len(gg))
+            #         top_grasps = gg[0:num_to_show]
 
-                    self.get_logger().info(
-                        f"检测到有效抓取，将可视化前 {num_to_show} 个最高分抓取位置："
-                    )
-                    for i in range(num_to_show):
-                        self.get_logger().info(
-                            f"  第 {i+1} 名抓取得分: {gg[i].score:.4f}"
-                        )
+            #         self.get_logger().info(
+            #             f"检测到有效抓取，将可视化前 {num_to_show} 个最高分抓取位置："
+            #         )
+            #         for i in range(num_to_show):
+            #             self.get_logger().info(
+            #                 f"  第 {i+1} 名抓取得分: {gg[i].score:.4f}"
+            #             )
 
-                    # 转换为 Open3D 几何体列表（to_open3d_geometry_list() 会把整个 GraspGroup 转为包含多个夹爪几何体的列表）
-                    top_grasps_geometry = top_grasps.to_open3d_geometry_list()
+            #         # 转换为 Open3D 几何体列表（to_open3d_geometry_list() 会把整个 GraspGroup 转为包含多个夹爪几何体的列表）
+            #         top_grasps_geometry = top_grasps.to_open3d_geometry_list()
 
-                    coord_frame = (
-                        o3d.geometry.TriangleMesh.create_coordinate_frame(
-                            size=0.1,
-                            origin=[0, 0, 0]
-                        )
-                    )
+            #         coord_frame = (
+            #             o3d.geometry.TriangleMesh.create_coordinate_frame(
+            #                 size=0.1,
+            #                 origin=[0, 0, 0]
+            #             )
+            #         )
 
-                    self.get_logger().info(
-                        f"正在打开 Open3D 窗口显示前 {num_to_show} 个抓取位姿..."
-                    )
+            #         self.get_logger().info(
+            #             f"正在打开 Open3D 窗口显示前 {num_to_show} 个抓取位姿..."
+            #         )
 
-                    o3d.visualization.draw_geometries(
-                        [
-                            o3d_cloud,
-                            *top_grasps_geometry, # 用解包符号将多个夹爪几何体全部传入
-                            coord_frame
-                        ],
-                        window_name="GraspNet Top 5 Grasps Visualization",
-                        width=1280,
-                        height=720
-                    )
+            #         o3d.visualization.draw_geometries(
+            #             [
+            #                 o3d_cloud,
+            #                 *top_grasps_geometry, # 用解包符号将多个夹爪几何体全部传入
+            #                 coord_frame
+            #             ],
+            #             window_name="GraspNet Top 5 Grasps Visualization",
+            #             width=1280,
+            #             height=720
+            #         )
 
-            except Exception as viz_err:
-                self.get_logger().warn(
-                    f"Open3D 可视化过程跳过或出错: {viz_err}"
-                )
+            # except Exception as viz_err:
+            #     self.get_logger().warn(
+            #         f"Open3D 可视化过程跳过或出错: {viz_err}"
+            #     )
             # --------------------------------------------------------------
 
             # 获取评分最高的前 10 个抓取候选并构造齐次变换矩阵

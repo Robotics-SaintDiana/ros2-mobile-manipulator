@@ -147,9 +147,8 @@ class ManipulatorTaskServer : public rclcpp::Node
                 geometry_msgs::msg::PoseStamped pick_pose;
                 pick_pose.pose.position = grasp_result->grasp_poses[0].pose.position;
                 pick_pose.pose.orientation = grasp_result->grasp_poses[0].pose.orientation;
-                pick_pose.header.frame_id = "hand_camera_depth_optical_frame";
+                pick_pose.header.frame_id = "panda_link0";
                 pick_pose.header.stamp = this->now();
-                // 3. 测试：先将分数最高的抓取位姿交由机械臂执行(执行前其实应该检验一下数据是否正确，这部分可以放在机械臂中检验)
                 if (!manipulator_executor_->pickExecutor(pick_pose)) return;
             } 
             
@@ -181,19 +180,45 @@ class ManipulatorTaskServer : public rclcpp::Node
                 return false;
             }
 
-            // 2. 根据顶部相机获取的位置计算三次拍摄中，机械臂应该到达的位置
+            // 2. 将放置物体的桌面加入 Moveit 的规划场景，防止机械臂在运动时与桌面发生碰撞
+            if (!manipulator_executor_->prepareCollisionScene(
+                    object_pose.pose.position.x, object_pose.pose.position.y)) {
+                RCLCPP_ERROR(this->get_logger(), "Failed to apply table collision object!");
+                return false;
+            }
+
+            // 3. 根据顶部相机获取的位置计算三次拍摄中，机械臂应该到达的位置
+            // 3.1 定义机械臂到达位置数组，默认数组大小为 3
             std::vector<geometry_msgs::msg::PoseStamped> arm_poses;
             arm_poses.resize(3);
-            getObservationPoses(arm_poses, object_pose);
 
-            // 3. 控制机械臂运动至指定位置，每运动到一个地方就获取一次点云数据
+            // 3.2 获取手部相机光学坐标系与 panda_hand 的 tf 变换关系
+            tf2::Transform camera_in_hand;
+            if (!manipulator_executor_->getTransform("panda_hand", "hand_camera_depth_optical_frame", camera_in_hand)) {
+                RCLCPP_ERROR(this->get_logger(), "Failed to get hand camera extrinsics!");
+                return false;
+            }
+
+            // 3.3 获取机械臂到达位置
+            getObservationPoses(arm_poses, object_pose, camera_in_hand);
+
+            // 4. 控制机械臂运动至指定位置，每运动到一个地方就获取一次点云数据
             std::vector<sensor_msgs::msg::PointCloud2> object_clouds;
             for (int i = 0; i < 3; i++) {  
                 // 先控制机械臂运动到指定的位置，因为运动是阻塞式的，只有全部完成了才会返回 
+                // 从第 2 个位置去第 3 个位置时，先回到中间过渡点，防止运动规划失败或者碰到物体
+                if (i == 2) {
+                    if (!manipulator_executor_->armMoveExecutor(arm_poses[0])) {
+                        return false;
+                    }
+                    rclcpp::sleep_for(std::chrono::milliseconds(500));
+                }
+
+                // 运动到当前目标位置
                 if (!manipulator_executor_->armMoveExecutor(arm_poses[i])) return false;
 
                 // 稍微延时一下，等待仿真稳定且获取到了最新的点云数据
-                rclcpp::sleep_for(std::chrono::seconds(2));
+                rclcpp::sleep_for(std::chrono::milliseconds(500));
 
                 // 获取点云数据
                 sensor_msgs::msg::PointCloud2 hand_camera_cloud;
@@ -205,7 +230,7 @@ class ManipulatorTaskServer : public rclcpp::Node
                 object_clouds.push_back(hand_camera_cloud);
             }
 
-            // 4. 将点云数据进行融合
+            // 5. 将点云数据进行融合
             filiter_cloud = perception_executor_->getHandCameraFusionCloud(object_clouds);
             if (filiter_cloud.data.empty()) {
                 RCLCPP_ERROR(this->get_logger(), "Hand camera fusion cloud is empty!");
@@ -270,54 +295,66 @@ class ManipulatorTaskServer : public rclcpp::Node
         }
 
         // 根据相机获取到的物体中心位置，生成相机拍摄的三个位姿
-        void getObservationPoses(std::vector<geometry_msgs::msg::PoseStamped>& arm_poses, const geometry_msgs::msg::PoseStamped& object_pose) {
-            // 提取中心坐标
-            double cx = object_pose.pose.position.x;
-            double cy = object_pose.pose.position.y;
-            double cz = object_pose.pose.position.z;
+        void getObservationPoses(std::vector<geometry_msgs::msg::PoseStamped>& arm_poses, const geometry_msgs::msg::PoseStamped& object_pose, const tf2::Transform& camera_in_hand) {
+             const tf2::Vector3 object(object_pose.pose.position.x,
+                                  object_pose.pose.position.y,
+                                  object_pose.pose.position.z);
 
-            // 定义拍摄时的安全高度偏移
-            double standoff_z = 0.35;                    // 在 Z 轴上，相机距离物体的安全高度
-            double x_offset = 0.2;                      // 左右两个视角相对于正上方俯视视角，在左右上偏置 15cm
-            double y_offset = 0.05;
-            double tilt_angle = 45.0 * M_PI / 180.0;     // 左右两个视角相对于正上方俯视视角，在 Z 轴上倾斜 30 度向内看
+            const double tilt = 45.0 * M_PI / 180.0;      // 侧视角倾角
+            const double cam_distance = 0.35;             // 相机到物体的距离
 
-            // -----------------------------------------------------------------
-            // 1. 中间视角（Center）：正上方俯视
-            // -----------------------------------------------------------------
-            // 仅在竖直方向上向上抬升，仍然保持向下的俯视姿态
-            arm_poses[0].pose.position.x = cx;
-            arm_poses[0].pose.position.y = cy;
-            arm_poses[0].pose.position.z = cz - standoff_z;
+            // 相机外参常量
+            const tf2::Vector3    p_cam_in_hand = camera_in_hand.getOrigin();
+            const tf2::Matrix3x3  R_cam_in_hand = camera_in_hand.getBasis();
+            // "手原点相对相机原点"的向量，表达在相机坐标系里（常量）
+            const tf2::Vector3    hand_in_cam = R_cam_in_hand.transpose() * p_cam_in_hand;
+            // panda_link8 <- panda_hand 的固定旋转
+            const tf2::Matrix3x3  R_link8_in_hand(
+                tf2::Quaternion(tf2::Vector3(0.0, 0.0, 1.0), -2.35619449));
 
-            tf2::Quaternion q_center;
-            q_center.setRPY(0.0, 0.0, M_PI / 2);
-            arm_poses[0].pose.orientation = tf2::toMsg(q_center);
+            std::vector<tf2::Vector3> view_dirs;
+            view_dirs.push_back(tf2::Vector3(0.0, 0.0, 1.0));
+            view_dirs.push_back(tf2::Vector3(0.0,  std::sin(tilt), std::cos(tilt)));
+            view_dirs.push_back(tf2::Vector3(0.0, -std::sin(tilt), std::cos(tilt)));
 
-            // -----------------------------------------------------------------
-            // 2. 左侧视角（Left）：位于左侧，向右倾斜 30 度
-            // -----------------------------------------------------------------
-            arm_poses[1].pose.position.x = cx + x_offset;
-            arm_poses[1].pose.position.y = cy - y_offset;
-            arm_poses[1].pose.position.z = cz - standoff_z;
+            for (std::size_t i = 0; i < arm_poses.size() && i < view_dirs.size(); ++i) {
+                tf2::Vector3 u = view_dirs[i];
+                u.normalize();                       // 物体 -> 相机的单位方向
 
-            tf2::Quaternion q_left;
-            q_left.setRPY(0.0, -tilt_angle + M_PI / 2, -M_PI);
-            arm_poses[1].pose.orientation = tf2::toMsg(q_left);
+                // 1) 理想相机姿态：光轴 z = -u，"画面上方"尽量对齐世界的 +z
+                tf2::Vector3 z_c(-u.x(), -u.y(), -u.z());
+                tf2::Vector3 x_c = tf2::Vector3(0.0, 0.0, 1.0).cross(z_c);
+                if (x_c.length() < 1e-3) x_c = tf2::Vector3(1.0, 0.0, 0.0);
+                x_c.normalize();
+                tf2::Vector3 y_c = z_c.cross(x_c);
+                const tf2::Matrix3x3 R_cam(
+                    x_c.x(), y_c.x(), z_c.x(),
+                    x_c.y(), y_c.y(), z_c.y(),
+                    x_c.z(), y_c.z(), z_c.z());
 
-            // -----------------------------------------------------------------
-            // 3. 右侧视角（Right）：位于右侧，向左倾斜 30 度
-            // -----------------------------------------------------------------
-            arm_poses[2].pose.position.x = cx - x_offset;
-            arm_poses[2].pose.position.y = cy - y_offset;
-            arm_poses[2].pose.position.z = cz - standoff_z;
+                // 2) 理想相机位置 + 反推手原点
+                const tf2::Vector3 cam_pos(
+                    object.x() + u.x() * cam_distance,
+                    object.y() + u.y() * cam_distance,
+                    object.z() + u.z() * cam_distance);
+                const tf2::Vector3 off = R_cam * hand_in_cam;
+                const tf2::Vector3 hand_pos(cam_pos.x() - off.x(),
+                                            cam_pos.y() - off.y(),
+                                            cam_pos.z() - off.z());
 
-            tf2::Quaternion q_right;
-            q_right.setRPY(0.0, tilt_angle, 0.0);
-            arm_poses[2].pose.orientation = tf2::toMsg(q_right);
+                // 3) 手的姿态 -> link8 的姿态
+                const tf2::Matrix3x3 R_hand = R_cam * R_cam_in_hand.transpose();
+                const tf2::Matrix3x3 R_link8 = R_hand * R_link8_in_hand;
 
-            for (auto& arm_pose : arm_poses) {
-                arm_pose.header.frame_id = object_pose.header.frame_id;
+                tf2::Quaternion q;
+                R_link8.getRotation(q);
+
+                arm_poses[i].pose.position.x = hand_pos.x();
+                arm_poses[i].pose.position.y = hand_pos.y();
+                arm_poses[i].pose.position.z = hand_pos.z();
+                arm_poses[i].pose.orientation = tf2::toMsg(q);
+                arm_poses[i].header.frame_id = "panda_link0";
+                arm_poses[i].header.stamp = object_pose.header.stamp;
             }
         }
 };

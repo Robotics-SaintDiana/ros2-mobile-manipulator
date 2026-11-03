@@ -186,9 +186,6 @@ sensor_msgs::msg::PointCloud2 PerceptionExecutor::getHandCameraFusionCloud(const
                                 inlier_zs.end());
             table_z = inlier_zs[inlier_zs.size() / 2];
             has_table_plane = true;
-
-            RCLCPP_INFO(node_->get_logger(), "Table plane: %zu inliers, table_z = %.3f m",
-                        inlier_zs.size(), table_z);
         }
     }
 
@@ -259,10 +256,6 @@ sensor_msgs::msg::PointCloud2 PerceptionExecutor::getHandCameraFusionCloud(const
         workspace_cloud->push_back(point);
     }
 
-    RCLCPP_INFO(node_->get_logger(),
-                "Fusion: %zu raw -> %zu voxel -> %zu workspace points (table kept)",
-                fusion_cloud->size(), downsampling_cloud->size(), workspace_cloud->size());
-
     // 如果最后的点云总数少于设定值，可能点云中压根没东西，不再传递给 GraspNet 推理
     if (static_cast<int>(workspace_cloud->size()) < fusion_min_points_) {
         RCLCPP_ERROR(node_->get_logger(), "Workspace cloud too small: %zu points (min %d)",
@@ -310,13 +303,41 @@ bool PerceptionExecutor::getObjectCenterPosition(geometry_msgs::msg::PoseStamped
     Eigen::Vector4f centroid;
     pcl::compute3DCentroid(*pcl_cloud, centroid);
 
-    // 3.3 返回物体的中心位置(frame_id 为 pick_camera_depth_optical_frame)
-    object_pose.header.frame_id = "pick_camera_depth_optical_frame";
+    // 3.3 把物体的中心位置变换到 panda_link0 坐标系下
+    const std::string cloud_frame_id = pick_camera_lasted_cloud.header.frame_id;
+    geometry_msgs::msg::TransformStamped transform_stamped;
+    bool is_transform_found = false;
+
+    // 先尝试获取点云时间戳所对应的 tf 变换
+    try {
+        transform_stamped = tf_buffer_->lookupTransform(
+            "panda_link0", cloud_frame_id,
+            rclcpp::Time(pick_camera_lasted_cloud.header.stamp, node_->get_clock()->get_clock_type()));
+        is_transform_found = true;
+    } catch (const tf2::TransformException &) {}
+
+    // 如果查询不到，再用当前时刻的 tf 变换
+    if (!is_transform_found) {
+        try {
+            transform_stamped = tf_buffer_->lookupTransform("panda_link0", cloud_frame_id, tf2::TimePointZero);
+        } catch (const tf2::TransformException & ex) {
+            RCLCPP_ERROR(node_->get_logger(), "Failed to get TF from [%s] to [panda_link0]: %s", cloud_frame_id.c_str(), ex.what());
+            return false;
+        }
+    }
+
+    // 转换至 panda_link0 坐标系下
+    tf2::Transform tf_link0_to_camera;
+    tf2::fromMsg(transform_stamped.transform, tf_link0_to_camera);
+    const tf2::Vector3 point_in_link0 = tf_link0_to_camera * tf2::Vector3(centroid[0], centroid[1], centroid[2]);
+
+    // 3.4 返回物体的中心位置
+    object_pose.header.frame_id = "panda_link0";
     object_pose.header.stamp = pick_camera_lasted_cloud.header.stamp;
 
-    object_pose.pose.position.x = centroid[0];
-    object_pose.pose.position.y = centroid[1];
-    object_pose.pose.position.z = centroid[2];
+    object_pose.pose.position.x = point_in_link0.x();
+    object_pose.pose.position.y = point_in_link0.y();
+    object_pose.pose.position.z = point_in_link0.z();
 
     // 默认四元数为数值向下(因为此处仅仅是配合抓取物体时识别大致中心位置，不需要很精确)
     object_pose.pose.orientation.x = 0.0;
@@ -324,7 +345,7 @@ bool PerceptionExecutor::getObjectCenterPosition(geometry_msgs::msg::PoseStamped
     object_pose.pose.orientation.z = 0.0;
     object_pose.pose.orientation.w = 1.0;
 
-    return true;
+    return true;    
 }
 
 // ----- 获取指定颜色托盘的放置位姿 -----
