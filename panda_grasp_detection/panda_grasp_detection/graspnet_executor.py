@@ -274,61 +274,61 @@ class GraspNetNode(Node):
             gg.sort_by_score()
 
             # --------------------------------------------------------------
-            # try:
-            #     o3d_cloud = o3d.geometry.PointCloud()
-            #     o3d_cloud.points = o3d.utility.Vector3dVector(cloud_np)
+            try:
+                o3d_cloud = o3d.geometry.PointCloud()
+                o3d_cloud.points = o3d.utility.Vector3dVector(cloud_np)
 
-            #     # 设置点云颜色
-            #     if len(colors_np) == len(cloud_np):
-            #         o3d_cloud.colors = o3d.utility.Vector3dVector(colors_np)
+                # 设置点云颜色
+                if len(colors_np) == len(cloud_np):
+                    o3d_cloud.colors = o3d.utility.Vector3dVector(colors_np)
 
-            #     if len(gg) == 0:
-            #         self.get_logger().warn(
-            #             "GraspNet 没有检测到有效抓取，跳过 Open3D 可视化"
-            #         )
-            #     else:
+                if len(gg) == 0:
+                    self.get_logger().warn(
+                        "GraspNet 没有检测到有效抓取，跳过 Open3D 可视化"
+                    )
+                else:
 
-            #         # 获取前 5 个抓取（如果总数小于 5，Python 的切片会自动取到最大可用数量）
-            #         num_to_show = min(5, len(gg))
-            #         top_grasps = gg[0:num_to_show]
+                    # 获取前 5 个抓取（如果总数小于 5，Python 的切片会自动取到最大可用数量）
+                    num_to_show = min(5, len(gg))
+                    top_grasps = gg[0:num_to_show]
 
-            #         self.get_logger().info(
-            #             f"检测到有效抓取，将可视化前 {num_to_show} 个最高分抓取位置："
-            #         )
-            #         for i in range(num_to_show):
-            #             self.get_logger().info(
-            #                 f"  第 {i+1} 名抓取得分: {gg[i].score:.4f}"
-            #             )
+                    self.get_logger().info(
+                        f"检测到有效抓取，将可视化前 {num_to_show} 个最高分抓取位置："
+                    )
+                    for i in range(num_to_show):
+                        self.get_logger().info(
+                            f"  第 {i+1} 名抓取得分: {gg[i].score:.4f}"
+                        )
 
-            #         # 转换为 Open3D 几何体列表（to_open3d_geometry_list() 会把整个 GraspGroup 转为包含多个夹爪几何体的列表）
-            #         top_grasps_geometry = top_grasps.to_open3d_geometry_list()
+                    # 转换为 Open3D 几何体列表（to_open3d_geometry_list() 会把整个 GraspGroup 转为包含多个夹爪几何体的列表）
+                    top_grasps_geometry = top_grasps.to_open3d_geometry_list()
 
-            #         coord_frame = (
-            #             o3d.geometry.TriangleMesh.create_coordinate_frame(
-            #                 size=0.1,
-            #                 origin=[0, 0, 0]
-            #             )
-            #         )
+                    coord_frame = (
+                        o3d.geometry.TriangleMesh.create_coordinate_frame(
+                            size=0.1,
+                            origin=[0, 0, 0]
+                        )
+                    )
 
-            #         self.get_logger().info(
-            #             f"正在打开 Open3D 窗口显示前 {num_to_show} 个抓取位姿..."
-            #         )
+                    self.get_logger().info(
+                        f"正在打开 Open3D 窗口显示前 {num_to_show} 个抓取位姿..."
+                    )
 
-            #         o3d.visualization.draw_geometries(
-            #             [
-            #                 o3d_cloud,
-            #                 *top_grasps_geometry, # 用解包符号将多个夹爪几何体全部传入
-            #                 coord_frame
-            #             ],
-            #             window_name="GraspNet Top 5 Grasps Visualization",
-            #             width=1280,
-            #             height=720
-            #         )
+                    o3d.visualization.draw_geometries(
+                        [
+                            o3d_cloud,
+                            *top_grasps_geometry, # 用解包符号将多个夹爪几何体全部传入
+                            coord_frame
+                        ],
+                        window_name="GraspNet Top 5 Grasps Visualization",
+                        width=1280,
+                        height=720
+                    )
 
-            # except Exception as viz_err:
-            #     self.get_logger().warn(
-            #         f"Open3D 可视化过程跳过或出错: {viz_err}"
-            #     )
+            except Exception as viz_err:
+                self.get_logger().warn(
+                    f"Open3D 可视化过程跳过或出错: {viz_err}"
+                )
             # --------------------------------------------------------------
 
             # 获取评分最高的前 10 个抓取候选并构造齐次变换矩阵
