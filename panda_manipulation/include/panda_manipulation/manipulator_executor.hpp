@@ -34,6 +34,11 @@ class ManipulatorExecutor
         // ----- 安全获取两个坐标系之间的 TF 变换 -----
         bool getTransform(const std::string & target_frame, const std::string & source_frame, tf2::Transform & transform_out);
 
+        // ----- 获取当前机械臂的所有关节角度状态 -----
+        std::vector<double> getCurrentJointValues();
+
+        bool moveHome();
+
     private:
         // ----- 机械臂运动辅助方法 -----
         bool moveArmToPose(const geometry_msgs::msg::PoseStamped & target_pose, bool use_cartesian = false);

@@ -53,10 +53,10 @@ class GraspNetNode(Node):
         # 3.1 声明参数
         default_checkpoint = os.path.join(GRASPNET_ROOT, "checkpoint", "checkpoint-rs.tar")
         self.declare_parameter("checkpoint_path", default_checkpoint)
-        self.declare_parameter("num_point", 1024)
+        self.declare_parameter("num_point", 20000)
         self.declare_parameter("collision_thresh", 0.01)
         self.declare_parameter("voxel_size", 0.01)
-        self.declare_parameter("depth_offset_scale", 1.0)
+        self.declare_parameter("depth_offset_scale", 0.8)
 
         # ---- 抓取后处理相关参数 ----
         # 碰撞检测前先按分数截断到多少个候选：碰撞是"候选数 x 点数"的计算，全量跑很慢很占内存
@@ -66,14 +66,17 @@ class GraspNetNode(Node):
         self.declare_parameter("score_ratio", 0.4)
         # 进刀/退让走廊要留多长，碰撞检测用它检查"手伸过去、退出来的路上有没有东西"
         self.declare_parameter("approach_dist", 0.05)
-        # 空抓检测：两指之间几乎没有点 -> 抓了个寂寞，直接丢掉
+        # 空抓检测：两指之间几乎没有点 
         self.declare_parameter("enable_empty_check", True)
         self.declare_parameter("empty_thresh", 0.02)
-        # 最终返回给机械臂的候选个数（C++ 侧会按顺序逐个尝试）
-        self.declare_parameter("keep_top_k", 5)
+        # 最终返回给机械臂的候选个数
+        self.declare_parameter("keep_top_k", 20)
         # 可选的"向下接近"预筛：0 表示关闭；0.6 表示要求 approach 与竖直向下夹角 <= 53 度。
-        # 它只是便宜的近似，真正的判据是含桌面的碰撞检测，别指望它代替后者
         self.declare_parameter("min_approach_down", 0.0)
+
+        # panda 机械臂夹爪最大开合为 0.08m
+        self.declare_parameter("min_width", 0.010)           # 设定夹子开合最低阈值
+        self.declare_parameter("max_width", 0.075)           # 设定夹子开合最高阈值
 
         checkpoint_path = self.get_parameter("checkpoint_path").value
         self.collision_thresh = float(self.get_parameter("collision_thresh").value)
@@ -86,6 +89,8 @@ class GraspNetNode(Node):
         self.empty_thresh = float(self.get_parameter("empty_thresh").value)
         self.keep_top_k = int(self.get_parameter("keep_top_k").value)
         self.min_approach_down = float(self.get_parameter("min_approach_down").value)
+        self.min_width = float(self.get_parameter("min_width").value)
+        self.max_width = float(self.get_parameter("max_width").value)
 
         # 3.2 初始化计算设备
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -238,6 +243,10 @@ class GraspNetNode(Node):
                 gg = gg[gg.scores >= self.score_ratio * max_score]
             n_score = len(gg)
 
+            # 剔除掉夹爪开合过小或者过大的点
+            if len(gg) > 0:
+                gg = gg[(gg.widths >= self.min_width) & (gg.widths <= self.max_width)]
+
             # 剔除可能导致碰撞，或者空抓的位姿点
             if self.collision_thresh > 0.0:
                 # 初始化无模型碰撞检测器开始碰撞检测
@@ -274,63 +283,63 @@ class GraspNetNode(Node):
             gg.sort_by_score()
 
             # --------------------------------------------------------------
-            try:
-                o3d_cloud = o3d.geometry.PointCloud()
-                o3d_cloud.points = o3d.utility.Vector3dVector(cloud_np)
+            # try:
+            #     o3d_cloud = o3d.geometry.PointCloud()
+            #     o3d_cloud.points = o3d.utility.Vector3dVector(cloud_np)
 
-                # 设置点云颜色
-                if len(colors_np) == len(cloud_np):
-                    o3d_cloud.colors = o3d.utility.Vector3dVector(colors_np)
+            #     # 设置点云颜色
+            #     if len(colors_np) == len(cloud_np):
+            #         o3d_cloud.colors = o3d.utility.Vector3dVector(colors_np)
 
-                if len(gg) == 0:
-                    self.get_logger().warn(
-                        "GraspNet 没有检测到有效抓取，跳过 Open3D 可视化"
-                    )
-                else:
+            #     if len(gg) == 0:
+            #         self.get_logger().warn(
+            #             "GraspNet 没有检测到有效抓取，跳过 Open3D 可视化"
+            #         )
+            #     else:
 
-                    # 获取前 5 个抓取（如果总数小于 5，Python 的切片会自动取到最大可用数量）
-                    num_to_show = min(5, len(gg))
-                    top_grasps = gg[0:num_to_show]
+            #         # 获取前 5 个抓取
+            #         num_to_show = min(10, len(gg))
+            #         top_grasps = gg[0:num_to_show]
 
-                    self.get_logger().info(
-                        f"检测到有效抓取，将可视化前 {num_to_show} 个最高分抓取位置："
-                    )
-                    for i in range(num_to_show):
-                        self.get_logger().info(
-                            f"  第 {i+1} 名抓取得分: {gg[i].score:.4f}"
-                        )
+            #         self.get_logger().info(
+            #             f"检测到有效抓取，将可视化前 {num_to_show} 个最高分抓取位置："
+            #         )
+            #         for i in range(num_to_show):
+            #             self.get_logger().info(
+            #                 f"  第 {i+1} 名抓取得分: {gg[i].score:.4f}"
+            #             )
 
-                    # 转换为 Open3D 几何体列表（to_open3d_geometry_list() 会把整个 GraspGroup 转为包含多个夹爪几何体的列表）
-                    top_grasps_geometry = top_grasps.to_open3d_geometry_list()
+            #         # 转换为 Open3D 几何体列表
+            #         top_grasps_geometry = top_grasps.to_open3d_geometry_list()
 
-                    coord_frame = (
-                        o3d.geometry.TriangleMesh.create_coordinate_frame(
-                            size=0.1,
-                            origin=[0, 0, 0]
-                        )
-                    )
+            #         coord_frame = (
+            #             o3d.geometry.TriangleMesh.create_coordinate_frame(
+            #                 size=0.1,
+            #                 origin=[0, 0, 0]
+            #             )
+            #         )
 
-                    self.get_logger().info(
-                        f"正在打开 Open3D 窗口显示前 {num_to_show} 个抓取位姿..."
-                    )
+            #         self.get_logger().info(
+            #             f"正在打开 Open3D 窗口显示前 {num_to_show} 个抓取位姿..."
+            #         )
 
-                    o3d.visualization.draw_geometries(
-                        [
-                            o3d_cloud,
-                            *top_grasps_geometry, # 用解包符号将多个夹爪几何体全部传入
-                            coord_frame
-                        ],
-                        window_name="GraspNet Top 5 Grasps Visualization",
-                        width=1280,
-                        height=720
-                    )
+            #         o3d.visualization.draw_geometries(
+            #             [
+            #                 o3d_cloud,
+            #                 *top_grasps_geometry, 
+            #                 coord_frame
+            #             ],
+            #             window_name="GraspNet Top 5 Grasps Visualization",
+            #             width=1280,
+            #             height=720
+            #         )
 
-            except Exception as viz_err:
-                self.get_logger().warn(
-                    f"Open3D 可视化过程跳过或出错: {viz_err}"
-                )
+            # except Exception as viz_err:
+            #     self.get_logger().warn(
+            #         f"Open3D 可视化过程跳过或出错: {viz_err}"
+            #     )
+
             # --------------------------------------------------------------
-
             # 获取评分最高的前 10 个抓取候选并构造齐次变换矩阵
             # 最多返回 10 个抓取候选位姿，不足 10 个的时候，有多少返回多少
             top_k = min(self.keep_top_k, len(gg))

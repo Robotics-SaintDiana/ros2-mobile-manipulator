@@ -26,6 +26,7 @@ add_executable(
   src/manipulator_task_server.cpp
   src/manipulator_executor.cpp
   src/perception_executor.cpp
+  src/grasp_feasibility_filter.cpp
 )
 
 target_compile_features(manipulator_task_server PUBLIC cxx_std_17)

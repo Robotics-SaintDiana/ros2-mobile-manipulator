@@ -132,7 +132,7 @@ bool ManipulatorExecutor::armMoveExecutor(const geometry_msgs::msg::PoseStamped&
     return true;
 }
 
-// // 向 Moveit 的规划场景中添加物体，防止机械臂与其发生碰撞
+// 向 Moveit 的规划场景中添加物体，防止机械臂与其发生碰撞
 bool ManipulatorExecutor::prepareCollisionScene(double center_x, double center_y) {
     // 向 Moveit 的规划场景中添加桌子
     moveit_msgs::msg::CollisionObject pick_table;
@@ -162,6 +162,11 @@ bool ManipulatorExecutor::prepareCollisionScene(double center_x, double center_y
     planning_scene_interface_->applyCollisionObject(pick_table);
 
     return true;
+}
+
+// 获取当前机械臂的所有关节角度状态
+std::vector<double> ManipulatorExecutor::getCurrentJointValues() {
+    return arm_group_->getCurrentJointValues();
 }
 
 // ----------------------------------------
@@ -464,5 +469,10 @@ bool ManipulatorExecutor::isPoseValidate(const geometry_msgs::msg::PoseStamped& 
     const double norm_tolerance = 1e-2;
     if (abs(norm_squared - 1.0) > norm_tolerance) return false;
 
+    return true;
+}
+
+bool ManipulatorExecutor::moveHome() {
+    if (!moveArmToJoints(home_joints)) return false;
     return true;
 }

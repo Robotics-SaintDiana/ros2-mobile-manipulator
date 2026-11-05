@@ -1,5 +1,5 @@
 {
   "frame_id": "map",
   "pick_station": {"x": 0.0, "y": 4.7, "yaw": 1.57},
-  "place_station": {"x": -5.2, "y": 0.0, "yaw": 3.14}
+  "place_station": {"x": -4.7, "y": 0.0, "yaw": 3.14}
 }

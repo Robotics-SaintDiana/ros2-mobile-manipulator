@@ -561,7 +561,7 @@ void PerceptionExecutor::loadParameters() {
 
     hand_camera_min_range_  = get_double("hand_camera_min_range", 0.08);
     hand_camera_max_range_  = get_double("hand_camera_max_range", 1.20);
-    fusion_voxel_size_      = get_double("fusion_voxel_size", 0.005);
+    fusion_voxel_size_      = get_double("fusion_voxel_size", 0.002);
     workspace_half_extent_  = get_double("workspace_half_extent", 0.30);
     workspace_max_height_   = get_double("workspace_max_height", 0.50);
     workspace_table_margin_ = get_double("workspace_table_margin", 0.03);

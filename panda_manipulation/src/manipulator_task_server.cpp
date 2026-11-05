@@ -12,6 +12,7 @@
 #include "robot_manipulation_msgs/action/infer_grasps.hpp"
 #include "panda_manipulation/manipulator_executor.hpp"
 #include "panda_manipulation/perception_executor.hpp"
+#include "panda_manipulation/grasp_feasibility_filter.hpp"
 
 class ManipulatorTaskServer : public rclcpp::Node
 {
@@ -41,6 +42,7 @@ class ManipulatorTaskServer : public rclcpp::Node
         void initialize() {
             manipulator_executor_ = std::make_shared<ManipulatorExecutor>(this->shared_from_this());
             perception_executor_ = std::make_shared<PerceptionExecutor>(this->shared_from_this());
+            feasibility_filter_ = std::make_shared<GraspFeasibilityFilter>(this->shared_from_this());
             graspnet_client_ = rclcpp_action::create_client<InferGrasps>(this, "/graspnet/infer_grasps");
         }    
 
@@ -49,6 +51,7 @@ class ManipulatorTaskServer : public rclcpp::Node
         rclcpp_action::Client<InferGrasps>::SharedPtr graspnet_client_;
         std::shared_ptr<ManipulatorExecutor> manipulator_executor_;
         std::shared_ptr<PerceptionExecutor> perception_executor_;
+        std::shared_ptr<GraspFeasibilityFilter> feasibility_filter_;
 
         // 1. 决定是否接收来自客户端的任务
         rclcpp_action::GoalResponse handle_goal(
@@ -131,7 +134,7 @@ class ManipulatorTaskServer : public rclcpp::Node
             // 获取任务管理器发送的指令目标
             const auto task_goal = goal_handle->get_goal();
 
-            // 机械臂运动子任务与 Graspnet 感知子任务的结果
+            // 机械臂运动子任务与 GraspNet 感知子任务的结果
             auto manipulate_result = std::make_shared<ManipulateObject::Result>();
             auto grasp_result = std::make_shared<InferGrasps::Result>();
             
@@ -141,15 +144,29 @@ class ManipulatorTaskServer : public rclcpp::Node
                 sensor_msgs::msg::PointCloud2 filiter_cloud;
                 if (!getFusionResult(filiter_cloud)) return;
 
-                // 2. 将获取到的最新点云数据传给 graspnet 进行推理，获取相应的抓取位姿
+                // 2. 将获取到的最新点云数据传给 GraspNet 进行推理，获取相应的抓取位姿
                 if (!getGraspnetResult(filiter_cloud, grasp_result)) return;
 
-                geometry_msgs::msg::PoseStamped pick_pose;
-                pick_pose.pose.position = grasp_result->grasp_poses[0].pose.position;
-                pick_pose.pose.orientation = grasp_result->grasp_poses[0].pose.orientation;
-                pick_pose.header.frame_id = "panda_link0";
-                pick_pose.header.stamp = this->now();
-                if (!manipulator_executor_->pickExecutor(pick_pose)) return;
+                // 3. 将 GraspNet 输出的推理结果进行运动学可行性过滤
+                const auto current_joints = manipulator_executor_->getCurrentJointValues();
+                for (auto& current_joint : current_joints) {
+                    RCLCPP_INFO(this->get_logger(), "当前的关节角度为 %.3f", current_joint);
+                }
+
+                std::vector<double> scores_double(grasp_result->scores.begin(), grasp_result->scores.end());
+                const auto filterResult = feasibility_filter_->graspPoseFilter(
+                    grasp_result->grasp_poses, scores_double, current_joints);
+                if (filterResult.empty()) {
+                    RCLCPP_ERROR(this->get_logger(),"[PICK] no feasible grasp");
+                    return;
+                }
+
+                RCLCPP_INFO(this->get_logger(),
+                    "[PICK] using candidate: score=%.3f rank=%.3f travel=%.2f (feasible %zu)",
+                    filterResult[0].score, filterResult[0].rank, filterResult[0].joint_travel,
+                    filterResult.size());
+
+                if (!manipulator_executor_->pickExecutor(filterResult[0].pose)) return;
             } 
             
             // 情况二：需要执行 Place 指令
@@ -227,6 +244,8 @@ class ManipulatorTaskServer : public rclcpp::Node
                     return false;
                 }
 
+                if (!manipulator_executor_->moveHome()) return false;
+                
                 object_clouds.push_back(hand_camera_cloud);
             }
 
@@ -306,7 +325,7 @@ class ManipulatorTaskServer : public rclcpp::Node
             // 相机外参常量
             const tf2::Vector3    p_cam_in_hand = camera_in_hand.getOrigin();
             const tf2::Matrix3x3  R_cam_in_hand = camera_in_hand.getBasis();
-            // "手原点相对相机原点"的向量，表达在相机坐标系里（常量）
+            // "手原点相对相机原点"的向量，表达在相机坐标系里
             const tf2::Vector3    hand_in_cam = R_cam_in_hand.transpose() * p_cam_in_hand;
             // panda_link8 <- panda_hand 的固定旋转
             const tf2::Matrix3x3  R_link8_in_hand(
