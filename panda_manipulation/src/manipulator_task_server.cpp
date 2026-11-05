@@ -149,10 +149,6 @@ class ManipulatorTaskServer : public rclcpp::Node
 
                 // 3. 将 GraspNet 输出的推理结果进行运动学可行性过滤
                 const auto current_joints = manipulator_executor_->getCurrentJointValues();
-                for (auto& current_joint : current_joints) {
-                    RCLCPP_INFO(this->get_logger(), "当前的关节角度为 %.3f", current_joint);
-                }
-
                 std::vector<double> scores_double(grasp_result->scores.begin(), grasp_result->scores.end());
                 const auto filterResult = feasibility_filter_->graspPoseFilter(
                     grasp_result->grasp_poses, scores_double, current_joints);
@@ -161,12 +157,21 @@ class ManipulatorTaskServer : public rclcpp::Node
                     return;
                 }
 
-                RCLCPP_INFO(this->get_logger(),
-                    "[PICK] using candidate: score=%.3f rank=%.3f travel=%.2f (feasible %zu)",
-                    filterResult[0].score, filterResult[0].rank, filterResult[0].joint_travel,
-                    filterResult.size());
+                // 4. 按得分从高到低尝试执行，最多尝试前 3 个
+                const size_t max_try = std::min(filterResult.size(), size_t{3});
+                bool is_execute_success = false;
 
-                if (!manipulator_executor_->pickExecutor(filterResult[0].pose)) return;
+                for (size_t i = 0; i < max_try; ++i) {
+                    if (manipulator_executor_->pickExecutor(filterResult[i].pose)) {
+                        is_execute_success = true;
+                        break;          
+                    }
+                }
+
+                if (!is_execute_success) {
+                    RCLCPP_ERROR(this->get_logger(), "[PICK] Execute Failed!");
+                    return;
+                }
             } 
             
             // 情况二：需要执行 Place 指令
@@ -174,7 +179,7 @@ class ManipulatorTaskServer : public rclcpp::Node
                 geometry_msgs::msg::PoseStamped place_pose;
                 if (!perception_executor_->getPlatePosition("green", place_pose.pose)) return;
 
-                place_pose.header.frame_id = "hand_camera_depth_optical_frame";
+                place_pose.header.frame_id = "panda_link0";
                 place_pose.header.stamp = this->now();
                 if (!manipulator_executor_->placeExecutor(place_pose)) return;
             }
@@ -244,6 +249,7 @@ class ManipulatorTaskServer : public rclcpp::Node
                     return false;
                 }
 
+                // 拍摄完成后让机械臂回到 Home 点，方便后续的抓取操作
                 if (!manipulator_executor_->moveHome()) return false;
                 
                 object_clouds.push_back(hand_camera_cloud);

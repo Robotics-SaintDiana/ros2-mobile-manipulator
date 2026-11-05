@@ -56,7 +56,7 @@ class GraspNetNode(Node):
         self.declare_parameter("num_point", 20000)
         self.declare_parameter("collision_thresh", 0.01)
         self.declare_parameter("voxel_size", 0.01)
-        self.declare_parameter("depth_offset_scale", 0.8)
+        self.declare_parameter("depth_offset_scale", 1.0)
 
         # ---- 抓取后处理相关参数 ----
         # 碰撞检测前先按分数截断到多少个候选：碰撞是"候选数 x 点数"的计算，全量跑很慢很占内存

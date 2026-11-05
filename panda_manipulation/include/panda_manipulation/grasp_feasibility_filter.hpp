@@ -101,8 +101,6 @@ class GraspFeasibilityFilter
 
         int max_candidates_ = 12;               // 最多只对前 12 个抓取位姿进行评估，防止计算量过大
         double ik_timeout_ = 0.05;              // 单次 IK 超时（秒）
-        double single_joint_limit_ = 1.5;       // 单个关节运动时最大转动角度（单位弧度，大约115度左右）
-        double all_joint_limit_ = 2.5;          // 所有关节运动时总共最大转动角度（单位弧度）
         double tcp_offset_ = 0.1034;            // TCP 坐标系在 panda_link8 的 Z 轴上的偏移位置
         double finger_max_width_ = 0.075;       // 夹爪的最大张开宽度
         double table_top_z_ = 0.035;            // panda_link0 下桌面上表面高度

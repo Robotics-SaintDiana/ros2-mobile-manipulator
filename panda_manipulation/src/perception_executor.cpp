@@ -4,7 +4,6 @@
 #include <pcl/common/centroid.h>
 #include <pcl/common/common.h>
 #include <pcl/common/pca.h>
-#include <pcl/features/moment_of_inertia_estimation.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_eigen/tf2_eigen.hpp>
@@ -273,7 +272,6 @@ sensor_msgs::msg::PointCloud2 PerceptionExecutor::getHandCameraFusionCloud(const
 }
 
 // ----- 获取 pick 相机识别到的物体的中心位置 -----
-// TODO：此处函数默认桌面上仅有一个物体，后期有较多物体时需要加入物体 id 识别和校验
 bool PerceptionExecutor::getObjectCenterPosition(geometry_msgs::msg::PoseStamped& object_pose) {
     // 1. 先获取 pick 相机最新的点云数据
     sensor_msgs::msg::PointCloud2 pick_camera_lasted_cloud;
@@ -357,9 +355,9 @@ bool PerceptionExecutor::getPlatePosition(const std::string& plate_color, geomet
         return false;
     }
 
-    // 2. 获取手部相机最新的点云数据
+    // 2. 获取放置台固定相机最新的点云数据
     sensor_msgs::msg::PointCloud2 plate_cloud;
-    if (!getHandCameraLatestProcessedCloud(plate_cloud)) {
+    if (!getPlaceCameraLatestProcessedCloud(plate_cloud)) {
         RCLCPP_WARN(node_->get_logger(), "Failed to get latest point cloud for plate detection.");
         return false;
     }
@@ -414,26 +412,18 @@ bool PerceptionExecutor::getPlatePosition(const std::string& plate_color, geomet
         return false;
     }
 
-    pcl::MomentOfInertiaEstimation<pcl::PointXYZRGB> feature_extractor;
-    feature_extractor.setInputCloud(color_filtered_cloud);
-    feature_extractor.compute();
+    // 4.4 计算目标颜色点云的质心，作为托盘中心
+    Eigen::Vector4f centroid;
+    pcl::compute3DCentroid(*color_filtered_cloud, centroid);
+    place_pose.position.x = centroid[0];
+    place_pose.position.y = centroid[1];
+    place_pose.position.z = centroid[2];
 
-    pcl::PointXYZRGB min_point_OBB, max_point_OBB;
-    pcl::PointXYZRGB position_OBB;
-    Eigen::Matrix3f rotational_matrix_OBB;
-    Eigen::Vector3f size_OBB;
-
-    feature_extractor.getOBB(min_point_OBB, max_point_OBB, position_OBB, rotational_matrix_OBB);
-    place_pose.position.x = position_OBB.x;
-    place_pose.position.y = position_OBB.y;
-    place_pose.position.z = position_OBB.z;
-
-    // 设置四元数
-    Eigen::Quaternionf q_eigen(rotational_matrix_OBB);
-    place_pose.orientation.x = q_eigen.x();
-    place_pose.orientation.y = q_eigen.y();
-    place_pose.orientation.z = q_eigen.z();
-    place_pose.orientation.w = q_eigen.w();
+    // 4.5 考虑到托盘是平整的，直接将放置姿态固定为竖直向下
+    place_pose.orientation.x = 1.0;
+    place_pose.orientation.y = 0.0;
+    place_pose.orientation.z = 0.0;
+    place_pose.orientation.w = 0.0;
 
     return true;
 }
@@ -455,8 +445,9 @@ bool PerceptionExecutor::getPickCameraLatestProcessedCloud(sensor_msgs::msg::Poi
     return true;
 }
 
-// ----- 返回放置固定相机最新处理好的点云数据 -----
-bool PerceptionExecutor::getPlaceCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& place_camera_lasted_cloud) {
+// ----- 返回放置固定相机最新处理好的点云数据，并转换到 panda_link0 坐标系下 -----
+bool PerceptionExecutor::getPlaceCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& panda_link0_lasted_cloud) {
+    sensor_msgs::msg::PointCloud2 place_camera_lasted_cloud;
     {
         std::lock_guard<std::mutex> lock(place_camera_cloud_mutex_);
 
@@ -469,6 +460,61 @@ bool PerceptionExecutor::getPlaceCameraLatestProcessedCloud(sensor_msgs::msg::Po
         // 返回存储的最新点云数据
         place_camera_lasted_cloud = place_camera_latest_processed_cloud_;
     }
+
+    // 此处同样将获取到的相机点云数据转换到 panda_link0 下，方式与 getHandCameraLatestProcessedCloud 中一致
+    const std::string cloud_frame_id = place_camera_lasted_cloud.header.frame_id;
+    if (cloud_frame_id.empty() || cloud_frame_id != "place_camera_depth_optical_frame") {
+        RCLCPP_ERROR(node_->get_logger(), "Invalid hand camera cloud frame_id: '%s'", cloud_frame_id.c_str());
+        return false;
+    }
+
+    // 获取两者之间的 tf 变换
+    geometry_msgs::msg::TransformStamped transform_stamped;
+    bool is_transform_found = false;
+
+    try {
+        transform_stamped = tf_buffer_->lookupTransform(
+            "panda_link0", cloud_frame_id,
+            rclcpp::Time(place_camera_lasted_cloud.header.stamp, node_->get_clock()->get_clock_type()));
+
+        is_transform_found = true;    
+    } catch (const tf2::TransformException &) {}
+
+    if (!is_transform_found) {
+        try {
+            transform_stamped = tf_buffer_->lookupTransform(
+                "panda_link0",
+                cloud_frame_id,
+                tf2::TimePointZero
+            );
+        } catch (const tf2::TransformException& ex) {
+            RCLCPP_ERROR(node_->get_logger(), "Failed to get latest TF: %s", ex.what());
+            return false;
+        }
+    }
+
+    // 将 ROS 消息转为 PCL 格式
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
+    pcl::fromROSMsg(place_camera_lasted_cloud, *pcl_cloud);
+    if (pcl_cloud->empty()) {
+        RCLCPP_ERROR(node_->get_logger(), "Converted hand camera cloud is empty!");
+        return false;
+    }
+
+    // 再转换到 panda_link0 坐标系下
+    Eigen::Matrix4f transform_matrix = tf2::transformToEigen(transform_stamped).matrix().cast<float>();
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr transformed_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
+    pcl::transformPointCloud(*pcl_cloud, *transformed_cloud, transform_matrix);
+    if (transformed_cloud->empty()) {
+        RCLCPP_ERROR(node_->get_logger(), "Transformed hand camera cloud is empty!");
+        return false;
+    }
+
+    // 最后将 PCL 点云转回 ROS
+    pcl::toROSMsg(*transformed_cloud, panda_link0_lasted_cloud);
+    panda_link0_lasted_cloud.header.frame_id = "panda_link0";
+    panda_link0_lasted_cloud.header.stamp = place_camera_lasted_cloud.header.stamp;
+    
     return true;
 }
 

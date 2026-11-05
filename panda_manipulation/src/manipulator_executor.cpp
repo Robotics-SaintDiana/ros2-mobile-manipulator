@@ -106,10 +106,28 @@ bool ManipulatorExecutor::placeExecutor(const geometry_msgs::msg::PoseStamped& p
     if (!isPoseValidate(place_pose_link0)) return false;
 
     // 4. 简单测试移动
-    if (!moveArmToPose(place_pose_link0)) return false;
-    geometry_msgs::msg::PoseStamped final_pose = place_pose_link0;
-    final_pose.pose.position.z -= 0.2;
-    if (!moveArmToPose(final_pose, true)) return false;
+    const double place_z_clearance = 0.10;
+    place_pose_link0.pose.position.z += place_z_clearance;
+
+    // 5. 第一段：运动到托盘上方的悬停点
+    geometry_msgs::msg::PoseStamped hover_pose = place_pose_link0;
+    hover_pose.pose.position.z += 0.15;
+    if (!moveArmToPose(hover_pose)) return false;
+
+    // 7. 第二段：沿着竖直方向直线下降到放置点
+    if (!moveArmToPose(place_pose_link0, true)) return false;
+
+    // 8. 张开夹爪松开物体，等待物体稳定落下
+    if (!controlGripper(true)) return false;
+    rclcpp::sleep_for(std::chrono::milliseconds(500));
+
+    // 9. 第三段：竖直抬起 10cm，脱离托盘
+    geometry_msgs::msg::PoseStamped retreat_pose = place_pose_link0;
+    retreat_pose.pose.position.z += 0.10;
+    if (!moveArmToPose(retreat_pose, true)) return false;
+
+    // 10. 回到 home 姿态
+    if (!moveArmToJoints(home_joints)) return false;
 
     return true;
 }

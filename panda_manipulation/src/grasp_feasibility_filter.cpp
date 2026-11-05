@@ -40,8 +40,6 @@ void GraspFeasibilityFilter::loadParameters() {
     // 检查节点中是否含有指定的参数，存在则获得其当前值，不存在则设置为默认值
     max_candidates_ = get_int("max_candidates_", 12);
     ik_timeout_ = get_double("ik_timeout_", 0.05);
-    single_joint_limit_ = get_double("single_joint_limit_", 1.5);
-    all_joint_limit_ = get_double("all_joint_limit_", 2.5);
     tcp_offset_ = get_double("tcp_offset_", 0.1034);
     finger_max_width_ = get_double("finger_max_width_", 0.075);             
     table_top_z_ = get_double("table_top_z_", 0.035);          
@@ -186,10 +184,6 @@ std::vector<GraspEvaluation> GraspFeasibilityFilter::graspPoseFilter(
 
         // 5.4 对机器人的关节行程进行检查
         graspEval.joint_travel = computeJointTravel(pose_solution, current_joints);
-        if (graspEval.joint_travel > all_joint_limit_) {
-            graspEval.reject_reason = "joint_too_far";
-            // continue;
-        }
         graspEval.is_joint_ok = true;
         last_stats_.joint_ok++;
 
@@ -284,26 +278,11 @@ double GraspFeasibilityFilter::computeJointTravel(const moveit::core::RobotState
     double all_joint_angle = 0.0;
     for (size_t i = 0; i < q_solution.size(); i++) {
         const double curr_angle = std::abs(q_solution[i] - current_joints[i]);
-        RCLCPP_INFO(node_->get_logger(), "目标位置：%.3f, 当前位置：%.3f，差值：%.3f",
-                    q_solution[i], current_joints[i], curr_angle);
-
-        // 如果当前单个关节转动角度超过阈值，则机器人需要转大圈才能达到，不认为该抓取位姿合理
-        if (curr_angle >= single_joint_limit_) {
-            RCLCPP_WARN(node_->get_logger(), "[TRAVEL] 单个转动角度过大！");
-            // return std::numeric_limits<double>::infinity();
-        }
-
+       
         // 累加所有关节的移动角度
         all_joint_angle += curr_angle;
     }
-
-    if (all_joint_angle >= single_joint_limit_) {
-        RCLCPP_WARN(node_->get_logger(),
-            "[TRAVEL] 所有关节移动角度总和过大");
-        // return std::numeric_limits<double>::infinity();
-    }
     
-    // return all_joint_angle >= all_joint_limit_ ? std::numeric_limits<double>::infinity() : all_joint_angle;
     return all_joint_angle;
 }
 

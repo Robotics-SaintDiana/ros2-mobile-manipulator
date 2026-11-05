@@ -31,7 +31,7 @@ class PerceptionExecutor
 
         // 返回相机最新处理好的点云数据
         bool getPickCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& pick_camera_lasted_cloud);
-        bool getPlaceCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& place_camera_lasted_cloud);
+        bool getPlaceCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& panda_link0_lasted_cloud);
         bool getHandCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& panda_link0_lasted_cloud);
 
     private:
