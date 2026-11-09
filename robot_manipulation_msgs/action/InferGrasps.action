@@ -6,6 +6,7 @@ bool success
 string message
 geometry_msgs/PoseStamped[] grasp_poses
 float32[] scores
+float32[] widths
 ---
 # Feedback
 string stage

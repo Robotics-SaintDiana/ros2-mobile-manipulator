@@ -2,6 +2,8 @@
 #define PANDA_MANIPULATION__MANIPULATION_EXECUTOR_HPP_
 
 #include <vector>
+#include <mutex>
+#include <deque>
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/pose.hpp>
@@ -44,17 +46,28 @@ class ManipulatorExecutor
         bool moveArmToPose(const geometry_msgs::msg::PoseStamped & target_pose, bool use_cartesian = false);
         bool moveArmToJoints(const std::vector<double>& joint_positions);
         bool controlGripper(bool open);
+        bool closeGripperStepwise();
 
         // ----- 机械臂任务执行合法性判断 -----
         bool isRobotReady();
         bool validateAndTransformPose(const geometry_msgs::msg::PoseStamped & input_pose_stamped, geometry_msgs::msg::PoseStamped & output_pose_stamped, const std::string task_stage);
         bool isPoseValidate(const geometry_msgs::msg::PoseStamped& target_pose);
 
+        // ----- 抓取物体位姿信息回调函数，以及获取抓取物体最新位姿数据函数-----
+        void objectPoseCallback(const tf2_msgs::msg::TFMessage::SharedPtr msg);
+        bool getObjectLatestPose(double & pose_z);
+
+        // ----- 夹爪位姿信息回调函数，以及获取抓取物体最新位姿数据函数-----
+        void fingerPoseCallback(const sensor_msgs::msg::JointState::SharedPtr msg);
+        bool getFingerLatestPose(double & finger_pose);
+
         // ----- ROS & MoveIt 句柄 -----
         rclcpp::Node::SharedPtr node_;
         std::shared_ptr<moveit::planning_interface::MoveGroupInterface> arm_group_;
         std::shared_ptr<moveit::planning_interface::MoveGroupInterface> hand_group_;
         std::shared_ptr<moveit::planning_interface::PlanningSceneInterface> planning_scene_interface_;
+        rclcpp::Subscription<tf2_msgs::msg::TFMessage>::SharedPtr object_pose_sub_;
+        rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr finger_joint_sub_;
 
         // ----- 用来获取 TF 变换 -----
         std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -63,7 +76,20 @@ class ManipulatorExecutor
         // ----- 预先设定好的关节角度 -----
         std::vector<double> start_joints = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -125.0 * M_PI / 180.0};
         std::vector<double> home_joints  = {0.0, 0.0, 0.0, -90.0 * M_PI / 180.0, 0.0, 92.0 * M_PI / 180.0, 50.0 * M_PI / 180.0};
+        
+        // ----- 抓取物体的 Z 方向位姿，以及相应的进程锁 -----
+        double object_pose_z_ = 0.0;
+        bool has_object_pose_ = false;
+        mutable std::mutex object_pose_mutex_;
+        rclcpp::Time object_pose_stamp_{0, 0, RCL_ROS_TIME};
 
+        // ----- 获取夹爪关节位置，以及相应的进程锁 -----
+        struct FingerPose { rclcpp::Time fingerStamp; double fingerPose;};
+        double finger_joint_pose_ = 0.0;
+        FingerPose latest_finger_pose_;
+        bool has_finger_joint_ = false;
+        mutable std::mutex finger_pose_mutex_;
+        
         // ----- 桌面碰撞物体的参数（基于 panda_link0 坐标系） -----
         double table_top_z_                 = 0.035;   // 桌面上表面在 panda_link0 下的高度
         double table_thickness_             = 0.10;

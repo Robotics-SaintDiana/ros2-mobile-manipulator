@@ -53,11 +53,11 @@ def generate_launch_description():
             "-topic", "robot_description",
             "-name", "panda",
             "-x", "0.0",  
-            "-y", "4.7",  
+            "-y", "0.0",  
             "-z", "0.15",  
             "-R", "0.0", 
             "-P", "0.0",
-            "-Y", "1.57",
+            "-Y", "0.0",
         ],
     )
 
@@ -67,6 +67,9 @@ def generate_launch_description():
         arguments=[
             # --- 公共时钟 ---
             "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock",
+
+            # --- 被抓取物体位置 ---
+            "/world/empty_world/pose/info@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V",
 
             # --- 底盘关节状态 ---
             "/world/empty_world/model/panda/joint_state@sensor_msgs/msg/JointState[ignition.msgs.Model",

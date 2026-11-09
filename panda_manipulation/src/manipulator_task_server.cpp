@@ -150,8 +150,9 @@ class ManipulatorTaskServer : public rclcpp::Node
                 // 3. 将 GraspNet 输出的推理结果进行运动学可行性过滤
                 const auto current_joints = manipulator_executor_->getCurrentJointValues();
                 std::vector<double> scores_double(grasp_result->scores.begin(), grasp_result->scores.end());
+                std::vector<double> widths_double(grasp_result->widths.begin(), grasp_result->widths.end());
                 const auto filterResult = feasibility_filter_->graspPoseFilter(
-                    grasp_result->grasp_poses, scores_double, current_joints);
+                    grasp_result->grasp_poses, scores_double, widths_double, current_joints);
                 if (filterResult.empty()) {
                     RCLCPP_ERROR(this->get_logger(),"[PICK] no feasible grasp");
                     return;
@@ -249,11 +250,11 @@ class ManipulatorTaskServer : public rclcpp::Node
                     return false;
                 }
 
-                // 拍摄完成后让机械臂回到 Home 点，方便后续的抓取操作
-                if (!manipulator_executor_->moveHome()) return false;
-                
                 object_clouds.push_back(hand_camera_cloud);
             }
+
+            // 拍摄完成后让机械臂回到 Home 点，方便后续的抓取操作
+            if (!manipulator_executor_->moveHome()) return false;
 
             // 5. 将点云数据进行融合
             filiter_cloud = perception_executor_->getHandCameraFusionCloud(object_clouds);
@@ -316,6 +317,7 @@ class ManipulatorTaskServer : public rclcpp::Node
             // 7. 获取 Graspnet 的推理结果
             grasp_result->grasp_poses = graspnet_inference_result->grasp_poses;
             grasp_result->scores = graspnet_inference_result->scores;
+            grasp_result->widths = graspnet_inference_result->widths;
             return true;
         }
 

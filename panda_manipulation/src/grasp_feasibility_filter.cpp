@@ -103,6 +103,7 @@ bool GraspFeasibilityFilter::filterInitialize() {
 std::vector<GraspEvaluation> GraspFeasibilityFilter::graspPoseFilter(
             const std::vector<geometry_msgs::msg::PoseStamped> & candidates,
             const std::vector<double> & scores,
+            const std::vector<double> & widths,
             const std::vector<double> & current_joints) 
 {
     // 返回的评估结果
@@ -120,7 +121,7 @@ std::vector<GraspEvaluation> GraspFeasibilityFilter::graspPoseFilter(
     }
 
     // 考虑到传入的候选位姿数量和得分数量可能并不一致，这里以长度较小的数组为准
-    const size_t array_len = std::min(candidates.size(), scores.size());
+    const size_t array_len = std::min({candidates.size(), scores.size(), widths.size()});
     if (array_len == 0) {
         // 传入的有空数组
         RCLCPP_ERROR(node_->get_logger(), "[FILTER] candidates or scores is empty");
@@ -160,6 +161,7 @@ std::vector<GraspEvaluation> GraspFeasibilityFilter::graspPoseFilter(
         GraspEvaluation graspEval;
         graspEval.pose = candidates[index];
         graspEval.score = scores[index];
+        graspEval.width = widths[index];
 
         // 5.2 检查该位姿是否处于桌面以下
         if (!checkTableClearance(graspEval.pose)) {

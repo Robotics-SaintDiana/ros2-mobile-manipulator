@@ -17,9 +17,10 @@
 // 一个 GraspNet 输出的候选抓取姿态的最终评估结果
 struct GraspEvaluation
 {
-    // ---- GraspNet 输出位姿的基本信息，包括位姿和分数 ----
+    // ---- GraspNet 输出位姿的基本信息，包括位姿、分数和夹爪宽度 ----
     geometry_msgs::msg::PoseStamped pose;
     double score = 0.0;
+    double width = 0.0;
 
     // ---- 每一项的评估结果以及最终的可行性结果 ----
     bool is_ik_ok    = false;       // 该位姿的 IK 是否有解
@@ -57,6 +58,7 @@ class GraspFeasibilityFilter
         std::vector<GraspEvaluation> graspPoseFilter(
             const std::vector<geometry_msgs::msg::PoseStamped> & candidates,
             const std::vector<double> & scores,
+            const std::vector<double> & widths,
             const std::vector<double> & current_joints);
             
     private:

@@ -151,7 +151,7 @@ class GraspNetNode(Node):
             cloud_data = list(pc2.read_points(msg, field_names=("x", "y", "z", "rgb"), skip_nans=True))
             if len(cloud_data) < 50:
                 self.get_logger().warn("收到的目标点云数量过少，无法进行抓取推理！")
-                return [], []
+                return [], [], []
 
             points = []
             colors = []
@@ -176,7 +176,7 @@ class GraspNetNode(Node):
 
             if len(cloud_np) < 50:
                 self.get_logger().warn("过滤无效坐标后，剩余点云数量不足！")
-                return [], []
+                return [], [], []
 
             # ---------------- 网络输入前置处理 ----------------
             # 传入的点云中很大一部分是桌面，这里先将桌面去除，仅将物体点云进行推理
@@ -217,14 +217,14 @@ class GraspNetNode(Node):
 
             if len(grasp_preds) == 0:
                 self.get_logger().warn("GraspNet 未返回抓取候选结果！")
-                return [], []
+                return [], [], []
 
             gg_array = grasp_preds[0].detach().cpu().numpy()
             gg = GraspGroup(gg_array)
 
             if len(gg) == 0:
                 self.get_logger().warn("GraspNet 没有生成有效抓取候选！")
-                return [], []
+                return [], [], []
 
             # 5.5 抓取候选去重与排序
             gg.sort_by_score()
@@ -276,7 +276,7 @@ class GraspNetNode(Node):
                     f"过滤后没有可行候选：网络 {n_network} -> 分数前{self.pre_collision_top} {n_top}"
                     f" -> 分数门槛 {n_score} -> 碰撞/空抓 0"
                 )
-                return [], []
+                return [], [], []
 
             # NMS 去重
             gg = gg.nms()
@@ -344,9 +344,10 @@ class GraspNetNode(Node):
             # 最多返回 10 个抓取候选位姿，不足 10 个的时候，有多少返回多少
             top_k = min(self.keep_top_k, len(gg))
 
-            # 函数最终会返回抓取候选位姿，以及相应的得分
+            # 函数最终会返回抓取候选位姿，以及相应的得分和夹爪对应的宽度
             grasp_poses = []
             scores = []
+            widths = []
 
             # 遍历 Graspnet 推理得到的结果，组装数据并返回
             for i in range(top_k):
@@ -378,13 +379,14 @@ class GraspNetNode(Node):
                 # 收集位姿和对应的评分
                 grasp_poses.append(target_pose)
                 scores.append(float(curr_grasp.score))
+                widths.append(float(curr_grasp.width))
 
-            return grasp_poses, scores
+            return grasp_poses, scores, widths
 
         except Exception as e:
             self.get_logger().error(f"处理目标点云时发生异常：{type(e).__name__}: {e}")
             self.get_logger().error("详细错误信息：\n" + __import__("traceback").format_exc())
-            return [], []
+            return [], [], []
 
     # ========================================================
     # 6. Graspnet 服务端的回调函数
@@ -411,12 +413,13 @@ class GraspNetNode(Node):
                 result.message = "Input point cloud is empty!"
                 result.grasp_poses = []
                 result.scores = []
+                result.widths = []
 
                 goal_handle.abort()
                 return result
 
             # 2. 调用 Graspnet 对传入的点云数据进行推理
-            grasp_poses, scores = self.infer_grasps(cloud_msg)
+            grasp_poses, scores, widths = self.infer_grasps(cloud_msg)
 
             # 如果推理失败，返回的 grasp_poses, scores 均为 []
             if not grasp_poses:
@@ -424,16 +427,18 @@ class GraspNetNode(Node):
                 result.message = "No valid grasp candidates found!"
                 result.grasp_poses = []
                 result.scores = []
+                result.widths = []
 
                 goal_handle.abort()
                 return result
 
-            # 如果返回的 grasp_poses 与 scores 长度不一致，也是一种错误情况
-            if len(grasp_poses) != len(scores):
+            # grasp_poses / scores / widths 三者长度必须一致
+            if len(grasp_poses) != len(scores) or len(grasp_poses) != len(widths):
                 result.success = False
-                result.message = "Mismatch between the number of grasp poses and scores!"
+                result.message = "Mismatch between the number of grasp poses, scores and widths!"
                 result.grasp_poses = []
                 result.scores = []
+                result.widths = []
 
                 goal_handle.abort()
                 return result
@@ -443,6 +448,7 @@ class GraspNetNode(Node):
             result.message = (f"Inference successful: {len(grasp_poses)} grasp candidates generated")
             result.grasp_poses = grasp_poses
             result.scores = scores
+            result.widths = widths
 
             self.get_logger().info(result.message)
             goal_handle.succeed()
@@ -455,6 +461,7 @@ class GraspNetNode(Node):
             result.message = str(e)
             result.grasp_poses = []
             result.scores = []
+            result.widths = []
 
             if goal_handle.is_active:
                 goal_handle.abort()

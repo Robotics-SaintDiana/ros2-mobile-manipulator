@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <cmath>
+#include <map>
 #include "panda_manipulation/manipulator_executor.hpp"
 
 // 构造函数实现
@@ -22,20 +24,19 @@ ManipulatorExecutor::ManipulatorExecutor(const rclcpp::Node::SharedPtr& node) : 
     // 4. 初始化 Moveit 场景规划器
     planning_scene_interface_ = std::make_shared<moveit::planning_interface::PlanningSceneInterface>();
 
-    // ---------- M0-5 诊断：规划框架 / IK 求解器 / 起始状态 ----------
-        RCLCPP_INFO(node_->get_logger(), "[M0][INIT] planning frame = %s",
-                    arm_group_->getPlanningFrame().c_str());
+    // 5. 初始化抓取物体位置订阅器
+    object_pose_sub_ = node_->create_subscription<tf2_msgs::msg::TFMessage>(
+        "/world/empty_world/pose/info",
+        10,
+        std::bind(&ManipulatorExecutor::objectPoseCallback, this, std::placeholders::_1)
+    );
 
-        auto init_state = arm_group_->getCurrentState(1.0);
-        if (!init_state) {
-            RCLCPP_ERROR(node_->get_logger(),
-                         "[M0][INIT] cannot get robot state at startup "
-                         "(joint_states 可能还没来)");
-        } else {
-            const auto* jmg = init_state->getRobotModel()->getJointModelGroup("panda_arm");
-            RCLCPP_INFO(node_->get_logger(), "[M0][INIT] panda_arm IK solver = %s",
-                        (jmg && jmg->getSolverInstance()) ? "PRESENT" : "MISSING");
-        }
+    // 6. 初始化夹爪位置订阅器
+    finger_joint_sub_ = node->create_subscription<sensor_msgs::msg::JointState>(
+        "/joint_states",
+        rclcpp::QoS(10),
+        std::bind(&ManipulatorExecutor::fingerPoseCallback, this, std::placeholders::_1)
+    );
 }
 
 // ----- 控制机械臂从物料台上按照指定位姿抓取物体 -----
@@ -80,17 +81,32 @@ bool ManipulatorExecutor::pickExecutor(const geometry_msgs::msg::PoseStamped& pi
     if (!moveArmToPose(offset_along(pick_pose_link0, -pregrasp_above), true)) return false;
 
     // 4.7 三段式第三段：继续直线下降到真正的抓取点
+    arm_group_->setMaxVelocityScalingFactor(0.1);
+    arm_group_->setMaxAccelerationScalingFactor(0.1);
     if (!moveArmToPose(pick_pose_link0, true)) return false;
 
-    // TODO：此处缺少物体被真正抓取的判断，需要补充
-    // 5. 关闭夹爪抓取物体
-    if (!controlGripper(false)) return false;
+    // 5.1 获取此时物体的 Z 轴位置
+    // 获取物体位置的原因是，仿真中比较难做到像实机中那样用 effort 来判定是否抓取住了物体
+    // 参考如 robosuite 等开源项目中的常见做法，采用比较抓取前后物体在 Z 方向的位置来判定物体成功抓取
+    double initial_pose_z = 0.0;
+    if (!getObjectLatestPose(initial_pose_z)) return false;
 
-    // 6. 先抬升机械臂至安全位置，再回到 Home 点，防止腕部旋转造成物体和桌面等碰撞
+    // 5.2 步进式关闭夹爪抓取物体
+    // 采用该方法的原因为 GraspNet 输出的宽度并不是物体的实际宽度，而完全闭合虽然也可以，但会导致夹爪的位置大幅度波动
+    // 为了尽可能贴近实机的抓取思路，采用步进式抓取，当夹爪的位置不再随着指令减小时，认为抓取到了物体
+    if (!closeGripperStepwise()) return false;
+
+    // 6.1 先控制机械臂沿抓取方向退回一定距离，防止腕部旋转造成物体和桌面等碰撞
     if (!moveArmToPose(offset_along(pick_pose_link0, -0.25), true)) return false;
+
+    // 6.2 回到 Home 位置，获取此时物体的 Z 轴位置进行判定
+    arm_group_->setMaxVelocityScalingFactor(0.5);
+    arm_group_->setMaxAccelerationScalingFactor(0.5);
     if (!moveArmToJoints(home_joints)) return false;
 
-    return true;
+    double lift_pose_z = 0.0;
+    if (!getObjectLatestPose(lift_pose_z)) return false;
+    return lift_pose_z - initial_pose_z > 0.04;
 }
 
 // ----- 控制机械臂向放置台上放置物体 -----
@@ -263,6 +279,38 @@ bool ManipulatorExecutor::controlGripper(bool open) {
     }
     auto result = hand_group_->move();
     return (result == moveit::core::MoveItErrorCode::SUCCESS);
+}
+
+// 控制夹爪步进运动
+bool ManipulatorExecutor::closeGripperStepwise() {
+    // 单步步进长度 --- 2mm
+    const double stepwise = 0.002;
+
+    // 1. 先获取夹爪的当前位置；位置过小，不够单次步进的话直接跳过
+    double finger_pose = 0.0;
+    if (!getFingerLatestPose(finger_pose) || finger_pose < stepwise) return false;
+
+    // 2. 夹爪步进闭合，直到指令变小但夹爪关节不跟(夹住了物体)，或者夹爪基本完全闭合(没有夹住物体)
+    bool is_contacted = false;
+    hand_group_->setMaxVelocityScalingFactor(1.0);
+    hand_group_->setMaxAccelerationScalingFactor(1.0);
+
+    for (; finger_pose > stepwise; finger_pose -= stepwise) {
+        // 控制夹爪步进运动
+        hand_group_->setJointValueTarget(std::map<std::string, double>{{"panda_finger_joint1", finger_pose}});
+        if (hand_group_->move() != moveit::core::MoveItErrorCode::SUCCESS) return false;
+
+        // 获取运动后的夹爪位置进行比较，如果指令变小但是夹爪的实际位置没有变小，说明夹住了物体
+        double curr_finger_pose = 0.0;
+        if (!getFingerLatestPose(curr_finger_pose)) return false;
+
+        if (std::abs(curr_finger_pose - finger_pose) > 0.004) {
+            is_contacted = true;
+            break;
+        }
+    }
+
+    return is_contacted;
 }
 
 // 安全获取两个坐标系之间的 TF 变换
@@ -492,5 +540,84 @@ bool ManipulatorExecutor::isPoseValidate(const geometry_msgs::msg::PoseStamped& 
 
 bool ManipulatorExecutor::moveHome() {
     if (!moveArmToJoints(home_joints)) return false;
+    return true;
+}
+
+// 抓取物体位姿获取回调函数
+void ManipulatorExecutor::objectPoseCallback(const tf2_msgs::msg::TFMessage::SharedPtr msg) {
+    // 在回调函数中只关心被抓取的物体，只从中获取该物体的位姿信息
+    const std::string objectName = "tall_cylinder_object";
+    for (const auto& transform : msg->transforms) {
+        if (transform.child_frame_id == objectName) {
+            // 存储最新的物体 Z 轴数据
+            {
+                std::lock_guard<std::mutex> lock(object_pose_mutex_);
+                object_pose_z_ = transform.transform.translation.z;
+            }
+            object_pose_stamp_ = node_->now();
+            has_object_pose_ = true;
+        }
+    }
+}
+
+// 获取被抓取物体最新的 Z 轴位姿数据
+bool ManipulatorExecutor::getObjectLatestPose(double & pose_z) {
+    // 1. 如果还没有从回调函数中获取物体位姿数据，报错
+    if (!has_object_pose_) {
+        RCLCPP_ERROR(node_->get_logger(), "Object pose not received yet!");
+        return false;
+    }
+
+    // 2. 如果时间戳差距过大，认为数据不准确，报错
+    if ((node_->now() -object_pose_stamp_).seconds() > 0.5) {
+        RCLCPP_ERROR(node_->get_logger(), "Object pose has expired!");
+        return false;
+    }
+
+    // 返回物体最新的 Z 轴位姿数据
+    {
+        std::lock_guard<std::mutex> lock(object_pose_mutex_);
+        pose_z =  object_pose_z_;
+    }
+    return true;
+}
+
+// 夹爪位姿信息回调函数
+void ManipulatorExecutor::fingerPoseCallback(const sensor_msgs::msg::JointState::SharedPtr msg) {
+    // 在回调函数中只关心 panda_finger_joint1，因为两个指关节是 minic 关系
+    const std::string finger_name = "panda_finger_joint1";
+    const size_t data_len = std::min(msg->name.size(), msg->position.size());
+
+    {
+        std::lock_guard<std::mutex> lock(finger_pose_mutex_);
+        for (size_t i = 0; i < data_len; i++) {
+            if (msg->name[i] == finger_name) {
+                latest_finger_pose_.fingerPose = msg->position[i];
+                latest_finger_pose_.fingerStamp = node_->now();
+                has_finger_joint_ = true;
+            }
+        }
+    }
+}
+
+// 获取夹爪最新的位姿数据
+bool ManipulatorExecutor::getFingerLatestPose(double & finger_pose) {
+    // 1. 如果还没有从回调函数中获取夹爪数据，报错
+    if (!has_finger_joint_) {
+        RCLCPP_ERROR(node_->get_logger(), "Finger pose not received yet!");
+        return false;
+    }
+
+    // 2. 如果时间戳差距过大，认为数据不准确，报错
+    if ((node_->now() - latest_finger_pose_.fingerStamp).seconds() > 0.5) {
+        RCLCPP_ERROR(node_->get_logger(), "Finger pose has expired!");
+        return false;
+    }
+
+    // 返回夹爪最新的位姿数据
+    {
+        std::lock_guard<std::mutex> lock(finger_pose_mutex_);
+        finger_pose = latest_finger_pose_.fingerPose; 
+    } 
     return true;
 }
