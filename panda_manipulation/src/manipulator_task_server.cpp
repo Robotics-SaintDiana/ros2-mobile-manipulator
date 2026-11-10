@@ -173,16 +173,34 @@ class ManipulatorTaskServer : public rclcpp::Node
                     RCLCPP_ERROR(this->get_logger(), "[PICK] Execute Failed!");
                     return;
                 }
+
+                if (!manipulator_executor_->removePickCollisionScene()) {
+                    RCLCPP_ERROR(this->get_logger(), "Failed to remove collision object!");
+                    return;
+                }
             } 
             
             // 情况二：需要执行 Place 指令
             if (task_goal->action_type == "place") {
                 geometry_msgs::msg::PoseStamped place_pose;
-                if (!perception_executor_->getPlatePosition("green", place_pose.pose)) return;
+                if (!perception_executor_->getPlatePosition(task_goal->color, place_pose.pose)) return;
 
+                // 向 Moveit 场景中添加物体
+                if (!manipulator_executor_->preparePlaceCollisionScene(
+                        place_pose.pose.position.x, place_pose.pose.position.y, place_pose.pose.position.z)) {
+                    RCLCPP_ERROR(this->get_logger(), "Failed to apply collision object!");
+                    return;
+                }
+                
                 place_pose.header.frame_id = "panda_link0";
                 place_pose.header.stamp = this->now();
                 if (!manipulator_executor_->placeExecutor(place_pose)) return;
+
+                // 去除 Moveit 场景中的物体
+                if (!manipulator_executor_->removePlaceCollisionScene()) {
+                    RCLCPP_ERROR(this->get_logger(), "Failed to remove collision object!");
+                    return;
+                }
             }
             
             manipulate_result->success = true;
@@ -204,9 +222,9 @@ class ManipulatorTaskServer : public rclcpp::Node
             }
 
             // 2. 将放置物体的桌面加入 Moveit 的规划场景，防止机械臂在运动时与桌面发生碰撞
-            if (!manipulator_executor_->prepareCollisionScene(
+            if (!manipulator_executor_->preparePickCollisionScene(
                     object_pose.pose.position.x, object_pose.pose.position.y)) {
-                RCLCPP_ERROR(this->get_logger(), "Failed to apply table collision object!");
+                RCLCPP_ERROR(this->get_logger(), "Failed to apply collision object!");
                 return false;
             }
 

@@ -166,36 +166,119 @@ bool ManipulatorExecutor::armMoveExecutor(const geometry_msgs::msg::PoseStamped&
     return true;
 }
 
-// 向 Moveit 的规划场景中添加物体，防止机械臂与其发生碰撞
-bool ManipulatorExecutor::prepareCollisionScene(double center_x, double center_y) {
-    // 向 Moveit 的规划场景中添加桌子
-    moveit_msgs::msg::CollisionObject pick_table;
-    pick_table.header.frame_id = "panda_link0";
-    pick_table.id = "table";
+// 在 Pick 流程中向 Moveit 的规划场景中添加物体，防止机械臂与其发生碰撞
+bool ManipulatorExecutor::preparePickCollisionScene(double center_x, double center_y) {
+    // 1. 向 Moveit 的规划场景中添加桌子
+    const std::string pick_table_id = "pick_table";
 
-    // 将桌子抽象为一个三维的长方体
-    // 这里长方体的大小并不和桌子实际大小完全一致，是按照机械臂大致能够接触到的位置来设置的，防止桌面和机械臂过近
-    shape_msgs::msg::SolidPrimitive pick_table_box;
-    pick_table_box.type = shape_msgs::msg::SolidPrimitive::BOX;
-    pick_table_box.dimensions.resize(3);
-    pick_table_box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_X] = pick_table_size_x_;
-    pick_table_box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Y] = pick_table_size_y_;
-    pick_table_box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z] = table_thickness_;
+    // 2. 设置桌子的三维大小
+    double table_x = pick_table_size_x_;
+    double table_y = pick_table_size_y_;
+    double table_z = table_thickness_;
 
-    // 设置长方体在 panda_link0 下的具体位置
-    geometry_msgs::msg::Pose pick_table_box_pose;
-    pick_table_box_pose.position.x = center_x;
-    pick_table_box_pose.position.y = center_y;
-    pick_table_box_pose.position.z = table_top_z_ - table_thickness_ / 2.0;
-    pick_table_box_pose.orientation.w = 1.0;
+    // 3. 设置桌子在 panda_link0 下的具体位置
+    geometry_msgs::msg::Pose pick_table_pose;
+    pick_table_pose.position.x = center_x;
+    pick_table_pose.position.y = center_y;
+    pick_table_pose.position.z = table_top_z_ - table_thickness_ / 2.0;
+    pick_table_pose.orientation.w = 1.0;
+    
+    // 4. 向 Moveit 的规划场景中添加桌子
+    return addBoxToScene(pick_table_id, pick_table_pose, table_x, table_y, table_z);
+}
 
-    // 将几何体放入 Moveit 的规划场景之中
-    pick_table.primitives.push_back(pick_table_box);
-    pick_table.primitive_poses.push_back(pick_table_box_pose);
-    pick_table.operation = moveit_msgs::msg::CollisionObject::ADD;
-    planning_scene_interface_->applyCollisionObject(pick_table);
+// 在 Place 流程中向 Moveit 的规划场景中添加物体，防止机械臂与其发生碰撞
+bool ManipulatorExecutor::preparePlaceCollisionScene(double center_x, double center_y, double center_z) {
+    // 这里主要向 Moveit 中添加需要放置托盘和桌面
+    // 1. 向 Moveit 的规划场景中添加托盘和桌子
+    const std::string plate_id = "plate";
+    const std::string place_table = "place_table";
 
-    return true;
+    // 2.1 设置桌子的三维大小
+    double table_x = place_table_size_x_;
+    double table_y = place_table_size_y_;
+    double table_z = table_thickness_;
+
+    // 2.2 设置托盘的三维大小
+    double plate_x = plate_size_;
+    double plate_y = plate_size_;
+    double plate_z = plate_thickness_;
+
+    // 3.1 设置桌子在 panda_link0 下的具体位置
+    geometry_msgs::msg::Pose place_table_pose;
+    place_table_pose.position.x = center_x;
+    place_table_pose.position.y = center_y;
+    place_table_pose.position.z = table_top_z_ - table_thickness_ / 2.0;
+    place_table_pose.orientation.w = 1.0;
+
+    // 3.2 设置托盘在 panda_link0 下的具体位置
+    geometry_msgs::msg::Pose plate_pose;
+    plate_pose.position.x = center_x;
+    plate_pose.position.y = center_y;
+    plate_pose.position.z = center_z - plate_thickness_ / 2;
+    plate_pose.orientation.w = 1.0;
+
+    // 4. 向 Moveit 的规划场景中进行添加
+    bool is_place_table_success = addBoxToScene(place_table, place_table_pose, table_x, table_y, table_z);
+    bool is_plate_success = addBoxToScene(plate_id, plate_pose, plate_x, plate_y, plate_z);
+    return is_place_table_success && is_plate_success;
+}
+
+// 向 Moveit 的规划场景中删除 Pick 流程中所添加的物体
+bool ManipulatorExecutor::removePickCollisionScene() {
+    // 删除 Pick 流程中所添加的物体
+    const std::string pick_table_id = "pick_table";
+    return removeObjectFromScene(pick_table_id);
+}
+
+// 向 Moveit 的规划场景中删除 Place 流程中所添加的物体
+bool ManipulatorExecutor::removePlaceCollisionScene() {
+    // 删除 Place 流程中所添加的物体
+    const std::string place_table_id = "place_table";
+    const std::string plate_id = "plate";
+
+    bool is_table_success = removeObjectFromScene(place_table_id);
+    bool is_plate_success = removeObjectFromScene(plate_id);
+    return is_table_success && is_plate_success;
+}
+
+// 向 Moveit 的规划场景中添加长方体物体
+bool ManipulatorExecutor::addBoxToScene(const std::string & box_id, geometry_msgs::msg::Pose & box_pose, double box_x, double box_y, double box_z) {
+    // 1. 向 Moveit 的规划场景中添加长方体物体
+    moveit_msgs::msg::CollisionObject box_to_add;
+    box_to_add.header.frame_id = "panda_link0";
+    box_to_add.id = box_id;
+
+    // 2. 设置该长方体的三维长度
+    shape_msgs::msg::SolidPrimitive box_to_add_size;
+    box_to_add_size.type = shape_msgs::msg::SolidPrimitive::BOX;
+    box_to_add_size.dimensions.resize(3);
+    box_to_add_size.dimensions[shape_msgs::msg::SolidPrimitive::BOX_X] = box_x;
+    box_to_add_size.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Y] = box_y;
+    box_to_add_size.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z] = box_z;
+
+    // 3. 设置该长方体在 panda_link0 下的具体位置
+    geometry_msgs::msg::Pose box_to_add_pose;
+    box_to_add_pose.position.x = box_pose.position.x;
+    box_to_add_pose.position.y = box_pose.position.y;
+    box_to_add_pose.position.z = box_pose.position.z;
+    box_to_add_pose.orientation.w = box_pose.orientation.w;
+
+    // 4. 将长方体放入 Moveit 的规划场景之中
+    box_to_add.primitives.push_back(box_to_add_size);
+    box_to_add.primitive_poses.push_back(box_to_add_pose);
+    box_to_add.operation = moveit_msgs::msg::CollisionObject::ADD;
+    return planning_scene_interface_->applyCollisionObject(box_to_add);
+}
+
+// 向 Moveit 的规划场景中删除物体
+bool ManipulatorExecutor::removeObjectFromScene(const std::string & object_id) {
+    moveit_msgs::msg::CollisionObject objetc_to_remove;
+    objetc_to_remove.header.frame_id = "panda_link0";
+    objetc_to_remove.id = object_id;
+
+    objetc_to_remove.operation = moveit_msgs::msg::CollisionObject::REMOVE;
+    return planning_scene_interface_->applyCollisionObject(objetc_to_remove);
 }
 
 // 获取当前机械臂的所有关节角度状态
@@ -552,33 +635,29 @@ void ManipulatorExecutor::objectPoseCallback(const tf2_msgs::msg::TFMessage::Sha
             // 存储最新的物体 Z 轴数据
             {
                 std::lock_guard<std::mutex> lock(object_pose_mutex_);
-                object_pose_z_ = transform.transform.translation.z;
+                latest_object_pose_.objectPose = transform.transform.translation.z;
+                latest_object_pose_.objectStamp = node_->now();
+                has_object_pose_ = true;
             }
-            object_pose_stamp_ = node_->now();
-            has_object_pose_ = true;
         }
     }
 }
 
 // 获取被抓取物体最新的 Z 轴位姿数据
 bool ManipulatorExecutor::getObjectLatestPose(double & pose_z) {
-    // 1. 如果还没有从回调函数中获取物体位姿数据，报错
-    if (!has_object_pose_) {
-        RCLCPP_ERROR(node_->get_logger(), "Object pose not received yet!");
-        return false;
-    }
-
-    // 2. 如果时间戳差距过大，认为数据不准确，报错
-    if ((node_->now() -object_pose_stamp_).seconds() > 0.5) {
-        RCLCPP_ERROR(node_->get_logger(), "Object pose has expired!");
-        return false;
-    }
-
-    // 返回物体最新的 Z 轴位姿数据
     {
         std::lock_guard<std::mutex> lock(object_pose_mutex_);
-        pose_z =  object_pose_z_;
+
+        // 1. 如果还没有从回调函数中获取物体位姿数据，报错
+        if (!has_object_pose_) {
+            RCLCPP_ERROR(node_->get_logger(), "Object pose not received yet!");
+            return false;
+        }
+
+        // 返回物体最新的 Z 轴位姿数据
+        pose_z =  latest_object_pose_.objectPose;
     }
+    
     return true;
 }
 
@@ -588,36 +667,38 @@ void ManipulatorExecutor::fingerPoseCallback(const sensor_msgs::msg::JointState:
     const std::string finger_name = "panda_finger_joint1";
     const size_t data_len = std::min(msg->name.size(), msg->position.size());
 
-    {
-        std::lock_guard<std::mutex> lock(finger_pose_mutex_);
-        for (size_t i = 0; i < data_len; i++) {
-            if (msg->name[i] == finger_name) {
+    for (size_t i = 0; i < data_len; i++) {
+        if (msg->name[i] == finger_name) {
+            {
+                std::lock_guard<std::mutex> lock(finger_pose_mutex_);
                 latest_finger_pose_.fingerPose = msg->position[i];
                 latest_finger_pose_.fingerStamp = node_->now();
                 has_finger_joint_ = true;
             }
         }
-    }
+    } 
 }
 
 // 获取夹爪最新的位姿数据
 bool ManipulatorExecutor::getFingerLatestPose(double & finger_pose) {
-    // 1. 如果还没有从回调函数中获取夹爪数据，报错
-    if (!has_finger_joint_) {
-        RCLCPP_ERROR(node_->get_logger(), "Finger pose not received yet!");
-        return false;
-    }
-
-    // 2. 如果时间戳差距过大，认为数据不准确，报错
-    if ((node_->now() - latest_finger_pose_.fingerStamp).seconds() > 0.5) {
-        RCLCPP_ERROR(node_->get_logger(), "Finger pose has expired!");
-        return false;
-    }
-
-    // 返回夹爪最新的位姿数据
     {
         std::lock_guard<std::mutex> lock(finger_pose_mutex_);
-        finger_pose = latest_finger_pose_.fingerPose; 
-    } 
+
+        // 1. 如果还没有从回调函数中获取夹爪数据，报错
+        if (!has_finger_joint_) {
+            RCLCPP_ERROR(node_->get_logger(), "Finger pose not received yet!");
+            return false;
+        }
+
+         // 2. 如果时间戳差距过大，认为数据不准确，报错
+        if ((node_->now() - latest_finger_pose_.fingerStamp).seconds() > 0.5) {
+            RCLCPP_ERROR(node_->get_logger(), "Finger pose has expired!");
+            return false;
+        }
+
+        // 返回夹爪最新的位姿数据
+        finger_pose = latest_finger_pose_.fingerPose;
+    }
+    
     return true;
 }

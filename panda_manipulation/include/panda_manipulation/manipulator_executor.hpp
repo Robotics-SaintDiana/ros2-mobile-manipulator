@@ -30,8 +30,11 @@ class ManipulatorExecutor
         // 控制机械臂运动至指定位姿处
         bool armMoveExecutor(const geometry_msgs::msg::PoseStamped& arm_pose);
 
-        // 向 Moveit 的规划场景中添加物体，防止机械臂与其发生碰撞
-        bool prepareCollisionScene(double center_x, double center_y);
+        // 在 Pick 和 Place 流程中向 Moveit 的规划场景中添加或者删除物体，防止机械臂与其发生碰撞
+        bool preparePickCollisionScene(double center_x, double center_y);
+        bool preparePlaceCollisionScene(double center_x, double center_y, double center_z);
+        bool removePickCollisionScene();
+        bool removePlaceCollisionScene();
 
         // ----- 安全获取两个坐标系之间的 TF 变换 -----
         bool getTransform(const std::string & target_frame, const std::string & source_frame, tf2::Transform & transform_out);
@@ -61,6 +64,10 @@ class ManipulatorExecutor
         void fingerPoseCallback(const sensor_msgs::msg::JointState::SharedPtr msg);
         bool getFingerLatestPose(double & finger_pose);
 
+        // ----- 向 Moveit 的规划场景中添加或者删除物体 -----
+        bool addBoxToScene(const std::string & box_id, geometry_msgs::msg::Pose & box_pose, double box_x, double box_y, double box_z);
+        bool removeObjectFromScene(const std::string & object_id);
+
         // ----- ROS & MoveIt 句柄 -----
         rclcpp::Node::SharedPtr node_;
         std::shared_ptr<moveit::planning_interface::MoveGroupInterface> arm_group_;
@@ -78,25 +85,26 @@ class ManipulatorExecutor
         std::vector<double> home_joints  = {0.0, 0.0, 0.0, -90.0 * M_PI / 180.0, 0.0, 92.0 * M_PI / 180.0, 50.0 * M_PI / 180.0};
         
         // ----- 抓取物体的 Z 方向位姿，以及相应的进程锁 -----
-        double object_pose_z_ = 0.0;
+        struct ObjectPose { rclcpp::Time objectStamp; double objectPose; };
+        ObjectPose latest_object_pose_;
         bool has_object_pose_ = false;
         mutable std::mutex object_pose_mutex_;
-        rclcpp::Time object_pose_stamp_{0, 0, RCL_ROS_TIME};
 
         // ----- 获取夹爪关节位置，以及相应的进程锁 -----
-        struct FingerPose { rclcpp::Time fingerStamp; double fingerPose;};
-        double finger_joint_pose_ = 0.0;
+        struct FingerPose { rclcpp::Time fingerStamp; double fingerPose; };
         FingerPose latest_finger_pose_;
         bool has_finger_joint_ = false;
         mutable std::mutex finger_pose_mutex_;
         
         // ----- 桌面碰撞物体的参数（基于 panda_link0 坐标系） -----
-        double table_top_z_                 = 0.035;   // 桌面上表面在 panda_link0 下的高度
-        double table_thickness_             = 0.10;
-        double pick_table_size_x_           = 0.60;    
-        double pick_table_size_y_           = 0.60;   
-        double place_table_size_x_          = 0.80;    
-        double palce_table_size_y_          = 0.80;      
+        const double table_top_z_ = 0.035;         // 桌面上表面在 panda_link0 下的高度
+        const double table_thickness_ = 0.10;
+        const double plate_thickness_ = 0.04;
+        const double pick_table_size_x_ = 0.60;    
+        const double pick_table_size_y_ = 0.60; 
+        const double place_table_size_x_ = 0.80;
+        const double place_table_size_y_ = 0.80;     
+        const double plate_size_ = 0.25;  
 }; 
 
 #endif

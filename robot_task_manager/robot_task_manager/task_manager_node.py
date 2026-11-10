@@ -124,7 +124,7 @@ class TaskManagerNode(Node):
         elif station_name == 'place_station':
             target_state = self.NAV_TO_PLACE
         else:
-            self.task_state == self.FAILED
+            self.task_state = self.FAILED
             self.get_logger().error(f'Unknown station: {station_name}')
             return
 
