@@ -50,15 +50,16 @@ class ManipulatorExecutor
         bool moveArmToJoints(const std::vector<double>& joint_positions);
         bool controlGripper(bool open);
         bool closeGripperStepwise();
+        bool descendArmStepwise(geometry_msgs::msg::PoseStamped & initial_pose);
 
         // ----- 机械臂任务执行合法性判断 -----
         bool isRobotReady();
         bool validateAndTransformPose(const geometry_msgs::msg::PoseStamped & input_pose_stamped, geometry_msgs::msg::PoseStamped & output_pose_stamped, const std::string task_stage);
-        bool isPoseValidate(const geometry_msgs::msg::PoseStamped& target_pose);
+        bool isPoseValidate(const geometry_msgs::msg::PoseStamped & target_pose);
 
         // ----- 抓取物体位姿信息回调函数，以及获取抓取物体最新位姿数据函数-----
         void objectPoseCallback(const tf2_msgs::msg::TFMessage::SharedPtr msg);
-        bool getObjectLatestPose(double & pose_z);
+        bool getObjectLatestPose(geometry_msgs::msg::Point & object_pose);
 
         // ----- 夹爪位姿信息回调函数，以及获取抓取物体最新位姿数据函数-----
         void fingerPoseCallback(const sensor_msgs::msg::JointState::SharedPtr msg);
@@ -85,7 +86,7 @@ class ManipulatorExecutor
         std::vector<double> home_joints  = {0.0, 0.0, 0.0, -90.0 * M_PI / 180.0, 0.0, 92.0 * M_PI / 180.0, 50.0 * M_PI / 180.0};
         
         // ----- 抓取物体的 Z 方向位姿，以及相应的进程锁 -----
-        struct ObjectPose { rclcpp::Time objectStamp; double objectPose; };
+        struct ObjectPose { rclcpp::Time objectStamp; geometry_msgs::msg::Point objectPose; };
         ObjectPose latest_object_pose_;
         bool has_object_pose_ = false;
         mutable std::mutex object_pose_mutex_;

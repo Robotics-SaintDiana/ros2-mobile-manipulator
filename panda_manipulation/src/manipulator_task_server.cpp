@@ -142,10 +142,16 @@ class ManipulatorTaskServer : public rclcpp::Node
             if (task_goal->action_type == "pick") {
                 // 1. 控制机械臂获取物体的点云数据
                 sensor_msgs::msg::PointCloud2 filiter_cloud;
-                if (!getFusionResult(filiter_cloud)) return;
+                if (!getFusionResult(filiter_cloud)) {
+                    goalFailed(goal_handle, "pick: failed to capture fused point cloud");
+                    return;
+                }
 
                 // 2. 将获取到的最新点云数据传给 GraspNet 进行推理，获取相应的抓取位姿
-                if (!getGraspnetResult(filiter_cloud, grasp_result)) return;
+                if (!getGraspnetResult(filiter_cloud, grasp_result)) {
+                    goalFailed(goal_handle, "pick: graspnet inference failed");
+                    return;
+                }
 
                 // 3. 将 GraspNet 输出的推理结果进行运动学可行性过滤
                 const auto current_joints = manipulator_executor_->getCurrentJointValues();
@@ -154,7 +160,7 @@ class ManipulatorTaskServer : public rclcpp::Node
                 const auto filterResult = feasibility_filter_->graspPoseFilter(
                     grasp_result->grasp_poses, scores_double, widths_double, current_joints);
                 if (filterResult.empty()) {
-                    RCLCPP_ERROR(this->get_logger(),"[PICK] no feasible grasp");
+                    goalFailed(goal_handle, "pick: no feasible grasp after filtering");
                     return;
                 }
 
@@ -170,12 +176,12 @@ class ManipulatorTaskServer : public rclcpp::Node
                 }
 
                 if (!is_execute_success) {
-                    RCLCPP_ERROR(this->get_logger(), "[PICK] Execute Failed!");
+                    goalFailed(goal_handle, "pick: all grasp attempts failed");
                     return;
                 }
 
                 if (!manipulator_executor_->removePickCollisionScene()) {
-                    RCLCPP_ERROR(this->get_logger(), "Failed to remove collision object!");
+                    goalFailed(goal_handle, "pick: failed to remove collision objects");
                     return;
                 }
             } 
@@ -183,22 +189,28 @@ class ManipulatorTaskServer : public rclcpp::Node
             // 情况二：需要执行 Place 指令
             if (task_goal->action_type == "place") {
                 geometry_msgs::msg::PoseStamped place_pose;
-                if (!perception_executor_->getPlatePosition(task_goal->color, place_pose.pose)) return;
+                if (!perception_executor_->getPlatePosition(task_goal->color, place_pose.pose)) {
+                    goalFailed(goal_handle, "place: target plate not found");
+                    return;
+                }
 
                 // 向 Moveit 场景中添加物体
                 if (!manipulator_executor_->preparePlaceCollisionScene(
                         place_pose.pose.position.x, place_pose.pose.position.y, place_pose.pose.position.z)) {
-                    RCLCPP_ERROR(this->get_logger(), "Failed to apply collision object!");
+                    goalFailed(goal_handle, "place: failed to add collision objects");
                     return;
                 }
                 
                 place_pose.header.frame_id = "panda_link0";
                 place_pose.header.stamp = this->now();
-                if (!manipulator_executor_->placeExecutor(place_pose)) return;
+                if (!manipulator_executor_->placeExecutor(place_pose)) {
+                    goalFailed(goal_handle, "place: placement execution failed");
+                    return;
+                }
 
                 // 去除 Moveit 场景中的物体
                 if (!manipulator_executor_->removePlaceCollisionScene()) {
-                    RCLCPP_ERROR(this->get_logger(), "Failed to remove collision object!");
+                    goalFailed(goal_handle, "place: failed to remove collision objects");
                     return;
                 }
             }
@@ -401,6 +413,18 @@ class ManipulatorTaskServer : public rclcpp::Node
                 arm_poses[i].header.frame_id = "panda_link0";
                 arm_poses[i].header.stamp = object_pose.header.stamp;
             }
+        }
+
+        void goalFailed(const std::shared_ptr<GoalHandleManipulateObject> & goal_handle, const std::string & message) {
+            // 1. 防止重复结束：cancel / succeed / abort 只能有一个
+            if (!goal_handle->is_active()) return;
+
+            auto result = std::make_shared<ManipulateObject::Result>();
+            result->success = false;
+            result->message = message;
+            goal_handle->abort(result);
+
+            RCLCPP_ERROR(this->get_logger(), "[TASK] aborted: %s", message.c_str());
         }
 };
 

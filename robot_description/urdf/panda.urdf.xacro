@@ -26,7 +26,7 @@
 
   <!-- 实例化相机 -->
   <xacro:sensor_d455 parent="panda_hand" name="hand_camera" use_nominal_extrinsics="true" use_mesh="true" near="0.05" far="2.0">
-    <origin xyz="-0.05 0 0" rpy="0 -1.57 0"/>
+    <origin xyz="-0.05 0 0.035" rpy="0 -1.57 0"/>
   </xacro:sensor_d455>
 
   <!-- Panda 机械臂引入 -->

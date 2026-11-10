@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <deque> 
 #include "panda_manipulation/manipulator_executor.hpp"
 
 // 构造函数实现
@@ -88,8 +89,8 @@ bool ManipulatorExecutor::pickExecutor(const geometry_msgs::msg::PoseStamped& pi
     // 5.1 获取此时物体的 Z 轴位置
     // 获取物体位置的原因是，仿真中比较难做到像实机中那样用 effort 来判定是否抓取住了物体
     // 参考如 robosuite 等开源项目中的常见做法，采用比较抓取前后物体在 Z 方向的位置来判定物体成功抓取
-    double initial_pose_z = 0.0;
-    if (!getObjectLatestPose(initial_pose_z)) return false;
+    geometry_msgs::msg::Point initial_pose;
+    if (!getObjectLatestPose(initial_pose)) return false;
 
     // 5.2 步进式关闭夹爪抓取物体
     // 采用该方法的原因为 GraspNet 输出的宽度并不是物体的实际宽度，而完全闭合虽然也可以，但会导致夹爪的位置大幅度波动
@@ -104,9 +105,9 @@ bool ManipulatorExecutor::pickExecutor(const geometry_msgs::msg::PoseStamped& pi
     arm_group_->setMaxAccelerationScalingFactor(0.5);
     if (!moveArmToJoints(home_joints)) return false;
 
-    double lift_pose_z = 0.0;
-    if (!getObjectLatestPose(lift_pose_z)) return false;
-    return lift_pose_z - initial_pose_z > 0.04;
+    geometry_msgs::msg::Point lift_pose;
+    if (!getObjectLatestPose(lift_pose)) return false;
+    return lift_pose.z - initial_pose.z > 0.04;
 }
 
 // ----- 控制机械臂向放置台上放置物体 -----
@@ -121,28 +122,25 @@ bool ManipulatorExecutor::placeExecutor(const geometry_msgs::msg::PoseStamped& p
     // 3. 对转换后的抓取位姿进行有效性判断
     if (!isPoseValidate(place_pose_link0)) return false;
 
-    // 4. 简单测试移动
-    const double place_z_clearance = 0.10;
-    place_pose_link0.pose.position.z += place_z_clearance;
-
-    // 5. 第一段：运动到托盘上方的悬停点
+    // 4. 第一段：运动到托盘上方的悬停点
     geometry_msgs::msg::PoseStamped hover_pose = place_pose_link0;
     hover_pose.pose.position.z += 0.15;
     if (!moveArmToPose(hover_pose)) return false;
 
     // 7. 第二段：沿着竖直方向直线下降到放置点
-    if (!moveArmToPose(place_pose_link0, true)) return false;
+    if (!descendArmStepwise(hover_pose)) return false;
 
     // 8. 张开夹爪松开物体，等待物体稳定落下
     if (!controlGripper(true)) return false;
-    rclcpp::sleep_for(std::chrono::milliseconds(500));
-
+ 
     // 9. 第三段：竖直抬起 10cm，脱离托盘
     geometry_msgs::msg::PoseStamped retreat_pose = place_pose_link0;
     retreat_pose.pose.position.z += 0.10;
+    arm_group_->setMaxVelocityScalingFactor(0.5);
+    arm_group_->setMaxAccelerationScalingFactor(0.5);
     if (!moveArmToPose(retreat_pose, true)) return false;
 
-    // 10. 回到 home 姿态
+    // 10. 回到 Home 姿态，并获取当前时刻物体的位姿
     if (!moveArmToJoints(home_joints)) return false;
 
     return true;
@@ -387,13 +385,69 @@ bool ManipulatorExecutor::closeGripperStepwise() {
         double curr_finger_pose = 0.0;
         if (!getFingerLatestPose(curr_finger_pose)) return false;
 
-        if (std::abs(curr_finger_pose - finger_pose) > 0.004) {
+        if (std::abs(curr_finger_pose - finger_pose) > 0.008) {
             is_contacted = true;
             break;
         }
     }
 
     return is_contacted;
+}
+
+// 控制机械臂步进下降
+bool ManipulatorExecutor::descendArmStepwise(geometry_msgs::msg::PoseStamped & initial_pose) {
+    const double stepwise = 0.005;         // 单步下降的距离
+    const double contact_eps = 0.0025;     // 当物体的实际下降距离小于此数时，认为已经接触到了桌面
+    const double slip_eps = 0.015;         // 当物体的实际下降距离大于此数时，认为物体从夹爪中脱落
+    const int max_steps = 40;              // 最大步进，超过最大次数还没有结束则认为下方没有桌面
+    const int deque_len = 3;               // 队列长度，用于求取平均值以消除下降过程中的滞后和抖动
+
+    // 1. 先获取物体的当前位置，定义存储每次下降距离的队列
+    geometry_msgs::msg::Point prev_object_pose;
+    if (!getObjectLatestPose(prev_object_pose)) return false;
+    std::deque<double> descend_window;
+
+    // 2. 机械臂步进下降，直到指令变小但夹机械臂不跟(物体已经到达桌面上方)
+    arm_group_->setMaxVelocityScalingFactor(0.2);
+    arm_group_->setMaxAccelerationScalingFactor(0.2);
+
+    for (int i = 0; i < max_steps; i++) {
+        // 控制机械臂步进运动
+        initial_pose.pose.position.z -= stepwise;
+
+        // 如果笛卡尔直线运动失败，说明物体距离桌面很近
+        if (!moveArmToPose(initial_pose, true)) {
+            RCLCPP_WARN(node_->get_logger(), "Cartesian descent blocked, treat as contact");
+            return true;
+        }
+
+        // 获取当前时刻物体的位置
+        geometry_msgs::msg::Point curr_object_pose;
+        if (!getObjectLatestPose(curr_object_pose)) return false;
+
+        // 计算此次步进运动的下降距离
+        const double descend_distance = prev_object_pose.z - curr_object_pose.z;
+        descend_window.push_back(descend_distance);
+        if (descend_window.size() > static_cast<size_t>(deque_len)) descend_window.pop_front();
+
+        // 计算平均值
+        double descend_mean = 0.0;
+        for (auto & item : descend_window) descend_mean += item;
+        descend_mean /= static_cast<double>(descend_window.size()); 
+
+        // 如果物体下降的距离小于阈值，认为已经接触到了桌面
+        if (descend_mean <= contact_eps) return true;  
+
+        // 如果物体的下降距离大于阈值，认为物体从夹爪中脱落
+        if (descend_mean >= slip_eps) {
+            RCLCPP_ERROR(node_->get_logger(), "Object slipped during descent");
+            return false;
+        }
+
+        prev_object_pose = curr_object_pose;
+    }
+
+    return false;
 }
 
 // 安全获取两个坐标系之间的 TF 变换
@@ -632,10 +686,12 @@ void ManipulatorExecutor::objectPoseCallback(const tf2_msgs::msg::TFMessage::Sha
     const std::string objectName = "tall_cylinder_object";
     for (const auto& transform : msg->transforms) {
         if (transform.child_frame_id == objectName) {
-            // 存储最新的物体 Z 轴数据
+            // 存储最新的物体位姿数据
             {
                 std::lock_guard<std::mutex> lock(object_pose_mutex_);
-                latest_object_pose_.objectPose = transform.transform.translation.z;
+                latest_object_pose_.objectPose.x = transform.transform.translation.x;
+                latest_object_pose_.objectPose.y = transform.transform.translation.y;
+                latest_object_pose_.objectPose.z = transform.transform.translation.z;
                 latest_object_pose_.objectStamp = node_->now();
                 has_object_pose_ = true;
             }
@@ -643,8 +699,8 @@ void ManipulatorExecutor::objectPoseCallback(const tf2_msgs::msg::TFMessage::Sha
     }
 }
 
-// 获取被抓取物体最新的 Z 轴位姿数据
-bool ManipulatorExecutor::getObjectLatestPose(double & pose_z) {
+// 获取被抓取物体最新的位姿数据
+bool ManipulatorExecutor::getObjectLatestPose(geometry_msgs::msg::Point & object_pose) {
     {
         std::lock_guard<std::mutex> lock(object_pose_mutex_);
 
@@ -654,8 +710,8 @@ bool ManipulatorExecutor::getObjectLatestPose(double & pose_z) {
             return false;
         }
 
-        // 返回物体最新的 Z 轴位姿数据
-        pose_z =  latest_object_pose_.objectPose;
+        // 返回物体最新的位姿数据
+        object_pose = latest_object_pose_.objectPose;
     }
     
     return true;
