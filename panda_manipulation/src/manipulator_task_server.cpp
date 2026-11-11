@@ -268,6 +268,7 @@ class ManipulatorTaskServer : public rclcpp::Node
                 }
 
                 // 运动到当前目标位置
+                const auto move_start_stamp = this->now();
                 if (!manipulator_executor_->armMoveExecutor(arm_poses[i])) return false;
 
                 // 稍微延时一下，等待仿真稳定且获取到了最新的点云数据
@@ -275,7 +276,7 @@ class ManipulatorTaskServer : public rclcpp::Node
 
                 // 获取点云数据
                 sensor_msgs::msg::PointCloud2 hand_camera_cloud;
-                if (!perception_executor_->getHandCameraLatestProcessedCloud(hand_camera_cloud)) {
+                if (!perception_executor_->getHandCameraLatestProcessedCloud(hand_camera_cloud, move_start_stamp)) {
                     RCLCPP_ERROR(this->get_logger(), "Failed to capture point cloud at pose %d", i);
                     return false;
                 }

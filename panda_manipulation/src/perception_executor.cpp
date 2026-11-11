@@ -273,77 +273,89 @@ sensor_msgs::msg::PointCloud2 PerceptionExecutor::getHandCameraFusionCloud(const
 
 // ----- 获取 pick 相机识别到的物体的中心位置 -----
 bool PerceptionExecutor::getObjectCenterPosition(geometry_msgs::msg::PoseStamped& object_pose) {
-    // 1. 先获取 pick 相机最新的点云数据
-    sensor_msgs::msg::PointCloud2 pick_camera_lasted_cloud;
-    if (!getPickCameraLatestProcessedCloud(pick_camera_lasted_cloud)) {
-        RCLCPP_ERROR(node_->get_logger(), "Can not get latest pick camera cloud!");
-        return false;
-    }
-
-    // 2. 去除点云数据中的桌面部分
-    auto pick_camera_lasted_cloud_ptr = std::make_shared<sensor_msgs::msg::PointCloud2>(pick_camera_lasted_cloud);
-    sensor_msgs::msg::PointCloud2 filiter_cloud = processAndPublishCloud(pick_camera_lasted_cloud_ptr);
-    if (filiter_cloud.data.empty()) {
-        RCLCPP_ERROR(node_->get_logger(), "Pick camera filter cloud is empty!");
-        return false;
-    }
-
-    // 3. 计算物体的中心位置作为物体的大致位置
-    // 3.1 首先先将过滤后的点云数据转为 PCL 原生点云
-    pcl::PointCloud<pcl::PointXYZRGB>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
-    pcl::fromROSMsg(filiter_cloud, *pcl_cloud);
-    if (pcl_cloud->empty()) {
-        RCLCPP_ERROR(node_->get_logger(), "PCL cloud is empty after conversion!");
-        return false;
-    }
-
-    // 3.2 计算三维平均坐标
-    Eigen::Vector4f centroid;
-    pcl::compute3DCentroid(*pcl_cloud, centroid);
-
-    // 3.3 把物体的中心位置变换到 panda_link0 坐标系下
-    const std::string cloud_frame_id = pick_camera_lasted_cloud.header.frame_id;
-    geometry_msgs::msg::TransformStamped transform_stamped;
-    bool is_transform_found = false;
-
-    // 先尝试获取点云时间戳所对应的 tf 变换
-    try {
-        transform_stamped = tf_buffer_->lookupTransform(
-            "panda_link0", cloud_frame_id,
-            rclcpp::Time(pick_camera_lasted_cloud.header.stamp, node_->get_clock()->get_clock_type()));
-        is_transform_found = true;
-    } catch (const tf2::TransformException &) {}
-
-    // 如果查询不到，再用当前时刻的 tf 变换
-    if (!is_transform_found) {
-        try {
-            transform_stamped = tf_buffer_->lookupTransform("panda_link0", cloud_frame_id, tf2::TimePointZero);
-        } catch (const tf2::TransformException & ex) {
-            RCLCPP_ERROR(node_->get_logger(), "Failed to get TF from [%s] to [panda_link0]: %s", cloud_frame_id.c_str(), ex.what());
-            return false;
+    // 这里常见的问题有：无法获取相机最新的点云数据；去除桌面后点云为空；以及 TF 变换获取失败
+    // 以上三个问题均采用失败重试机制，最多尝试三次
+    rclcpp::Time start_time = node_->now();
+    for (int attempt = 0; attempt < 3; attempt++) {
+        // 1. 先获取 pick 相机最新的点云数据；如果没有获取到最新的点云数据，重新尝试
+        sensor_msgs::msg::PointCloud2 pick_camera_latest_cloud;
+        if (!getPickCameraLatestProcessedCloud(pick_camera_latest_cloud, start_time)) {
+            RCLCPP_ERROR(node_->get_logger(), "Can not get latest pick camera cloud!");
+            continue;
         }
+
+        // 更新时间戳，用于下一次重试
+        start_time = node_->now();
+
+        // 2. 去除点云数据中的桌面部分，去除后为空点云的话可能是点云存在问题，重试
+        auto pick_camera_lasted_cloud_ptr = std::make_shared<sensor_msgs::msg::PointCloud2>(pick_camera_latest_cloud);
+        sensor_msgs::msg::PointCloud2 filiter_cloud = processAndPublishCloud(pick_camera_lasted_cloud_ptr);
+        if (filiter_cloud.data.empty()) {
+            RCLCPP_ERROR(node_->get_logger(), "Pick camera filter cloud is empty!");
+            continue;
+        }
+
+        // 3. 计算物体的中心位置作为物体的大致位置
+        // 3.1 首先先将过滤后的点云数据转为 PCL 原生点云
+        pcl::PointCloud<pcl::PointXYZRGB>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
+        pcl::fromROSMsg(filiter_cloud, *pcl_cloud);
+        if (pcl_cloud->empty()) {
+            RCLCPP_ERROR(node_->get_logger(), "PCL cloud is empty after conversion!");
+            continue;
+        }
+
+        // 3.2 计算三维平均坐标
+        Eigen::Vector4f centroid;
+        pcl::compute3DCentroid(*pcl_cloud, centroid);
+
+        // 3.3 把物体的中心位置变换到 panda_link0 坐标系下
+        const std::string cloud_frame_id = pick_camera_latest_cloud.header.frame_id;
+        geometry_msgs::msg::TransformStamped transform_stamped;
+        bool is_transform_found = false;
+
+        // 先尝试获取点云时间戳所对应的 tf 变换
+        try {
+            transform_stamped = tf_buffer_->lookupTransform(
+                "panda_link0", cloud_frame_id,
+                rclcpp::Time(pick_camera_latest_cloud.header.stamp, node_->get_clock()->get_clock_type()));
+            is_transform_found = true;
+        } catch (const tf2::TransformException &) {}
+
+        // 如果查询不到，再用当前时刻的 tf 变换，如果当前时刻 TF 变换也查询不到则重试
+        if (!is_transform_found) {
+            try {
+                transform_stamped = tf_buffer_->lookupTransform("panda_link0", cloud_frame_id, tf2::TimePointZero);
+            } catch (const tf2::TransformException & ex) {
+                RCLCPP_ERROR(node_->get_logger(), "Failed to get TF from [%s] to [panda_link0]: %s", cloud_frame_id.c_str(), ex.what());
+                continue;
+            }
+        }
+
+        // 转换至 panda_link0 坐标系下
+        tf2::Transform tf_link0_to_camera;
+        tf2::fromMsg(transform_stamped.transform, tf_link0_to_camera);
+        const tf2::Vector3 point_in_link0 = tf_link0_to_camera * tf2::Vector3(centroid[0], centroid[1], centroid[2]);
+
+        // 3.4 返回物体的中心位置
+        object_pose.header.frame_id = "panda_link0";
+        object_pose.header.stamp = pick_camera_latest_cloud.header.stamp;
+
+        object_pose.pose.position.x = point_in_link0.x();
+        object_pose.pose.position.y = point_in_link0.y();
+        object_pose.pose.position.z = point_in_link0.z();
+
+        // 默认四元数为数值向下(因为此处仅仅是配合抓取物体时识别大致中心位置，不需要很精确)
+        object_pose.pose.orientation.x = 0.0;
+        object_pose.pose.orientation.y = 0.0;
+        object_pose.pose.orientation.z = 0.0;
+        object_pose.pose.orientation.w = 1.0;
+
+        return true;    
     }
 
-    // 转换至 panda_link0 坐标系下
-    tf2::Transform tf_link0_to_camera;
-    tf2::fromMsg(transform_stamped.transform, tf_link0_to_camera);
-    const tf2::Vector3 point_in_link0 = tf_link0_to_camera * tf2::Vector3(centroid[0], centroid[1], centroid[2]);
-
-    // 3.4 返回物体的中心位置
-    object_pose.header.frame_id = "panda_link0";
-    object_pose.header.stamp = pick_camera_lasted_cloud.header.stamp;
-
-    object_pose.pose.position.x = point_in_link0.x();
-    object_pose.pose.position.y = point_in_link0.y();
-    object_pose.pose.position.z = point_in_link0.z();
-
-    // 默认四元数为数值向下(因为此处仅仅是配合抓取物体时识别大致中心位置，不需要很精确)
-    object_pose.pose.orientation.x = 0.0;
-    object_pose.pose.orientation.y = 0.0;
-    object_pose.pose.orientation.z = 0.0;
-    object_pose.pose.orientation.w = 1.0;
-
-    return true;    
+    // 重试三次后仍然错误则认为失败
+    RCLCPP_ERROR(node_->get_logger(), "getObjectCenterPosition failed after 3 attempts");
+    return false;
 }
 
 // ----- 获取指定颜色托盘的放置位姿 -----
@@ -354,111 +366,148 @@ bool PerceptionExecutor::getPlatePosition(const std::string& plate_color, geomet
         RCLCPP_ERROR(node_->get_logger(), "Invalid plate color: [%s]. Supported colors are: red, green, blue.", plate_color.c_str());
         return false;
     }
+    
+    // 这里常见的问题有：无法获取相机最新的点云数据；以及过滤后的点云数量不足
+    // 以上两个问题均采用失败重试机制，最多尝试三次
+    rclcpp::Time start_time = node_->now();
 
-    // 2. 获取放置台固定相机最新的点云数据
-    sensor_msgs::msg::PointCloud2 plate_cloud;
-    if (!getPlaceCameraLatestProcessedCloud(plate_cloud)) {
-        RCLCPP_WARN(node_->get_logger(), "Failed to get latest point cloud for plate detection.");
-        return false;
-    }
-
-    // 3. 将 ROS 点云转换为 PCL 原生点云
-    pcl::PointCloud<pcl::PointXYZRGB>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
-    pcl::fromROSMsg(plate_cloud, *pcl_cloud);
-
-    if (pcl_cloud->empty()) {
-        RCLCPP_WARN(node_->get_logger(), "Converted PCL point cloud is empty, skipping current processing.");
-        return false;
-    }
-
-    // 4. 利用 HSV 空间提取指定颜色的托盘点云
-    pcl::PointCloud<pcl::PointXYZRGB>::Ptr color_filtered_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
-    for (const auto& point : *pcl_cloud) {
-        // 4.1 有效点过滤，将数值为 NaN 或者 Inf 的点过滤掉
-        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {
+    for (int attempt = 0; attempt < 3; attempt++) { 
+        // 2. 获取放置台固定相机最新的点云数据；如果没有获取到最新的点云数据，重新尝试
+        sensor_msgs::msg::PointCloud2 plate_cloud;
+        if (!getPlaceCameraLatestProcessedCloud(plate_cloud, start_time)) {
+            RCLCPP_ERROR(node_->get_logger(), "Can not get latest place camera cloud!");
             continue;
         }
 
-        // 4.2 将 RGB 转为 HSV，并进行颜色匹配
-        float point_h, point_s, point_v;
-        rgbToHsv(point.r, point.g, point.b, point_h, point_s, point_v);
+        // 更新时间戳，用于下一次重试
+        start_time = node_->now();
 
-        bool is_match = false;
-        if (plate_color == "red") {
-            // 红色的 H 通常在 0~10 或 330~360 左右
-            if (((point_h >= 0.0f && point_h <= 15.0f) || (point_h >= 330.0f && point_h <= 360.0f)) && point_s > 0.4f && point_v > 0.2f) {
-                is_match = true;
+        // 3. 将 ROS 点云转换为 PCL 原生点云
+        pcl::PointCloud<pcl::PointXYZRGB>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
+        pcl::fromROSMsg(plate_cloud, *pcl_cloud);
+
+        if (pcl_cloud->empty()) {
+            RCLCPP_WARN(node_->get_logger(), "Converted PCL point cloud is empty, skipping current processing.");
+            continue;
+        }
+
+        // 4. 利用 HSV 空间提取指定颜色的托盘点云
+        pcl::PointCloud<pcl::PointXYZRGB>::Ptr color_filtered_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
+        for (const auto& point : *pcl_cloud) {
+            // 4.1 有效点过滤，将数值为 NaN 或者 Inf 的点过滤掉
+            if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {
+                continue;
             }
-        } else if (plate_color == "green") {
-            // 绿色的 H 通常在 90~150 左右
-            if (point_h >= 90.0f && point_h <= 150.0f && point_s > 0.4f && point_v > 0.2f) {
-                is_match = true;
+
+            // 4.2 将 RGB 转为 HSV，并进行颜色匹配
+            float point_h, point_s, point_v;
+            rgbToHsv(point.r, point.g, point.b, point_h, point_s, point_v);
+
+            bool is_match = false;
+            if (plate_color == "red") {
+                // 红色的 H 通常在 0~10 或 330~360 左右
+                if (((point_h >= 0.0f && point_h <= 15.0f) || (point_h >= 330.0f && point_h <= 360.0f)) && point_s > 0.4f && point_v > 0.2f) {
+                    is_match = true;
+                }
+            } else if (plate_color == "green") {
+                // 绿色的 H 通常在 90~150 左右
+                if (point_h >= 90.0f && point_h <= 150.0f && point_s > 0.4f && point_v > 0.2f) {
+                    is_match = true;
+                }
+            } else if (plate_color == "blue") {
+                // 蓝色的 H 通常在 200~260 左右
+                if (point_h >= 200.0f && point_h <= 260.0f && point_s > 0.4f && point_v > 0.2f) {
+                    is_match = true;
+                }
             }
-        } else if (plate_color == "blue") {
-            // 蓝色的 H 通常在 200~260 左右
-            if (point_h >= 200.0f && point_h <= 260.0f && point_s > 0.4f && point_v > 0.2f) {
-                is_match = true;
+
+            if (is_match) {
+                color_filtered_cloud->push_back(point);
             }
         }
 
-        if (is_match) {
-            color_filtered_cloud->push_back(point);
+        // 4.3. 检查过滤后的点云数量是否足够
+        if (color_filtered_cloud->size() < 50) {
+            RCLCPP_ERROR(node_->get_logger(), "Not enough points found for target color: [%s]", plate_color.c_str());
+            continue;
         }
+
+        // 4.4 计算目标颜色点云的质心，作为托盘中心
+        Eigen::Vector4f centroid;
+        pcl::compute3DCentroid(*color_filtered_cloud, centroid);
+        place_pose.position.x = centroid[0];
+        place_pose.position.y = centroid[1];
+        place_pose.position.z = centroid[2];
+
+        // 4.5 考虑到托盘是平整的，直接将放置姿态固定为竖直向下
+        place_pose.orientation.x = 1.0;
+        place_pose.orientation.y = 0.0;
+        place_pose.orientation.z = 0.0;
+        place_pose.orientation.w = 0.0;
+
+        return true;
     }
 
-    // 4.3. 检查过滤后的点云数量是否足够
-    if (color_filtered_cloud->size() < 50) {
-        RCLCPP_WARN(node_->get_logger(), "Not enough points found for target color: [%s]", plate_color.c_str());
-        return false;
-    }
-
-    // 4.4 计算目标颜色点云的质心，作为托盘中心
-    Eigen::Vector4f centroid;
-    pcl::compute3DCentroid(*color_filtered_cloud, centroid);
-    place_pose.position.x = centroid[0];
-    place_pose.position.y = centroid[1];
-    place_pose.position.z = centroid[2];
-
-    // 4.5 考虑到托盘是平整的，直接将放置姿态固定为竖直向下
-    place_pose.orientation.x = 1.0;
-    place_pose.orientation.y = 0.0;
-    place_pose.orientation.z = 0.0;
-    place_pose.orientation.w = 0.0;
-
-    return true;
+    // 重试三次后仍然错误则认为失败
+    RCLCPP_ERROR(node_->get_logger(), "getPlatePosition failed after 3 attempts");
+    return false;
 }
 
 // ----- 返回抓取固定相机最新处理好的点云数据 -----
-bool PerceptionExecutor::getPickCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& pick_camera_lasted_cloud) {
-    {
-        std::lock_guard<std::mutex> lock(pick_camera_cloud_mutex_);
+bool PerceptionExecutor::getPickCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& pick_camera_lastest_cloud, const rclcpp::Time & min_stamp) {
+    // 处理思路与手部相机相同，设置最长等待时间，在此时间内等待最新的点云数据
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+    bool has_latest_cloud = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        {
+            std::lock_guard<std::mutex> lock(pick_camera_cloud_mutex_);
 
-        // 如果没有最新的点云数据，报错返回
-        if (pick_camera_latest_processed_cloud_.data.empty()) {
-            RCLCPP_WARN(node_->get_logger(), "No latest processed point cloud data available from the pick camera!");
-            return false;
+            // 尝试获取最新的点云数据，要求数据不为空且点云时间戳大于函数调用时刻
+            if (!pick_camera_latest_processed_cloud_.data.empty() &&
+                rclcpp::Time(pick_camera_latest_processed_cloud_.header.stamp) > min_stamp)
+            {
+                pick_camera_lastest_cloud = pick_camera_latest_processed_cloud_;
+                has_latest_cloud = true;
+                break;
+            }
         }
-
-        // 返回存储的最新点云数据
-        pick_camera_lasted_cloud = pick_camera_latest_processed_cloud_;
+         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
+    
+    if (!has_latest_cloud) {
+        RCLCPP_WARN(node_->get_logger(), "No latest processed point cloud data available from the pick camera!");
+        return false;
+    }
+    
     return true;
 }
 
 // ----- 返回放置固定相机最新处理好的点云数据，并转换到 panda_link0 坐标系下 -----
-bool PerceptionExecutor::getPlaceCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& panda_link0_lasted_cloud) {
+bool PerceptionExecutor::getPlaceCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& panda_link0_lastest_cloud, const rclcpp::Time & min_stamp) {
     sensor_msgs::msg::PointCloud2 place_camera_lasted_cloud;
-    {
-        std::lock_guard<std::mutex> lock(place_camera_cloud_mutex_);
 
-        // 如果没有最新的点云数据，报错返回
-        if (place_camera_latest_processed_cloud_.data.empty()) {
-            RCLCPP_WARN(node_->get_logger(), "No latest processed point cloud data available from the place camera!");
-            return false;
+    // 处理思路与手部相机相同，设置最长等待时间，在此时间内等待最新的点云数据
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+    bool has_latest_cloud = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        {
+            std::lock_guard<std::mutex> lock(place_camera_cloud_mutex_);
+
+            // 尝试获取最新的点云数据，要求数据不为空且点云时间戳大于函数调用时刻
+            if (!place_camera_latest_processed_cloud_.data.empty() && 
+                rclcpp::Time(place_camera_latest_processed_cloud_.header.stamp) > min_stamp) 
+            {
+                place_camera_lasted_cloud = place_camera_latest_processed_cloud_;
+                has_latest_cloud = true;
+                break;
+            }
         }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
 
-        // 返回存储的最新点云数据
-        place_camera_lasted_cloud = place_camera_latest_processed_cloud_;
+    if (!has_latest_cloud) {
+        RCLCPP_WARN(node_->get_logger(), "No latest processed point cloud data available from the place camera!");
+        return false;
     }
 
     // 此处同样将获取到的相机点云数据转换到 panda_link0 下，方式与 getHandCameraLatestProcessedCloud 中一致
@@ -511,30 +560,43 @@ bool PerceptionExecutor::getPlaceCameraLatestProcessedCloud(sensor_msgs::msg::Po
     }
 
     // 最后将 PCL 点云转回 ROS
-    pcl::toROSMsg(*transformed_cloud, panda_link0_lasted_cloud);
-    panda_link0_lasted_cloud.header.frame_id = "panda_link0";
-    panda_link0_lasted_cloud.header.stamp = place_camera_lasted_cloud.header.stamp;
+    pcl::toROSMsg(*transformed_cloud, panda_link0_lastest_cloud);
+    panda_link0_lastest_cloud.header.frame_id = "panda_link0";
+    panda_link0_lastest_cloud.header.stamp = place_camera_lasted_cloud.header.stamp;
     
     return true;
 }
 
 // ----- 返回手部相机最新处理好的点云数据，并转换到 panda_link0 坐标系下 -----
-bool PerceptionExecutor::getHandCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& panda_link0_lasted_cloud) {
+bool PerceptionExecutor::getHandCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& panda_link0_lastest_cloud, const rclcpp::Time & min_stamp) {
     sensor_msgs::msg::PointCloud2 hand_camera_lasted_cloud;
-    {
-        std::lock_guard<std::mutex> lock(hand_camera_cloud_mutex_);
 
-        // 如果没有最新的点云数据，报错返回
-        if (hand_camera_latest_processed_cloud_.data.empty()) {
-            RCLCPP_WARN(node_->get_logger(), "No latest processed point cloud data available from the hand camera!");
-            return false;
+    // 手部相机的点云数据后续要进行融合及推理，所以必须用最新时刻的点云
+    // 这里的主要处理思路是设置一个最长等待时间，在此时间内等待最新的点云数据，没有最新数据则认为失败
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+    bool has_latest_cloud = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        {
+            std::lock_guard<std::mutex> lock(hand_camera_cloud_mutex_);
+
+            // 尝试获取最新的点云数据，要求数据不为空且点云时间戳大于函数调用时刻
+            if (!hand_camera_latest_processed_cloud_.data.empty() && 
+                rclcpp::Time(hand_camera_latest_processed_cloud_.header.stamp) > min_stamp) 
+            {
+                hand_camera_lasted_cloud = hand_camera_latest_processed_cloud_;
+                has_latest_cloud = true;
+                break;
+            }
         }
-
-        // 返回存储的最新点云数据
-        hand_camera_lasted_cloud = hand_camera_latest_processed_cloud_;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
 
-    // 直接在此处将获取到的手部相机点云数据转换到 panda_link0 下，首先获取两者之间的 tf 变换
+    if (!has_latest_cloud) {
+        RCLCPP_WARN(node_->get_logger(), "No latest processed point cloud data available from the hand camera!");
+        return false;
+    }
+
+    // 获取到最新的点云后，直接在此处将获取到的手部相机点云数据转换到 panda_link0 下，首先获取两者之间的 tf 变换
     // 先按点云自身时间戳查，该方法最为精确；如果查询不到则采用当前时刻的 tf 变换替代，因为机械臂保持静止，所以两者基本上等价
     // 先检查查询到的点云数据的 frame_id 是否合法，防止后续查询 tf 变换出错
     const std::string cloud_frame_id =  hand_camera_lasted_cloud.header.frame_id;
@@ -588,9 +650,9 @@ bool PerceptionExecutor::getHandCameraLatestProcessedCloud(sensor_msgs::msg::Poi
     }
 
     // 最后将 PCL 点云转回 ROS
-    pcl::toROSMsg(*transformed_cloud, panda_link0_lasted_cloud);
-    panda_link0_lasted_cloud.header.frame_id = "panda_link0";
-    panda_link0_lasted_cloud.header.stamp = hand_camera_lasted_cloud.header.stamp;
+    pcl::toROSMsg(*transformed_cloud, panda_link0_lastest_cloud);
+    panda_link0_lastest_cloud.header.frame_id = "panda_link0";
+    panda_link0_lastest_cloud.header.stamp = hand_camera_lasted_cloud.header.stamp;
 
     return true;
 }
@@ -647,9 +709,6 @@ void PerceptionExecutor::placeCameraPointCloudCallback(const sensor_msgs::msg::P
 
 // ----- 获取手部相机的点云数据进行处理 -----
 void PerceptionExecutor::handCameraPointCloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg) {
-    // 调用辅助函数，获取最新的点云数据
-    // sensor_msgs::msg::PointCloud2 output_ros_cloud = processAndPublishCloud(msg);
-
     // 存储最新的点云信息，并将其发布出去
     {
         std::lock_guard<std::mutex> lock(hand_camera_cloud_mutex_);

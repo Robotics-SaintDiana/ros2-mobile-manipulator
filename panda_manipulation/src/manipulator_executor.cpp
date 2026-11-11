@@ -97,7 +97,10 @@ bool ManipulatorExecutor::pickExecutor(const geometry_msgs::msg::PoseStamped& pi
     // 为了尽可能贴近实机的抓取思路，采用步进式抓取，当夹爪的位置不再随着指令减小时，认为抓取到了物体
     if (!closeGripperStepwise()) return false;
 
-    // 6.1 先控制机械臂沿抓取方向退回一定距离，防止腕部旋转造成物体和桌面等碰撞
+    // 6.1 先控制机械臂抬升一定距离，然后再沿抓取方向退回一定距离，防止物体和桌面挂蹭或碰撞
+    geometry_msgs::msg::PoseStamped lift_target_pose = pick_pose_link0;
+    lift_target_pose.pose.position.z += 0.05;
+    if (!moveArmToPose(lift_target_pose, true)) return false;
     if (!moveArmToPose(offset_along(pick_pose_link0, -0.25), true)) return false;
 
     // 6.2 回到 Home 位置，获取此时物体的 Z 轴位置进行判定

@@ -103,14 +103,13 @@ class GraspFeasibilityFilter
 
         int max_candidates_ = 12;               // 最多只对前 12 个抓取位姿进行评估，防止计算量过大
         double ik_timeout_ = 0.05;              // 单次 IK 超时（秒）
-        double tcp_offset_ = 0.1034;            // TCP 坐标系在 panda_link8 的 Z 轴上的偏移位置
         double finger_max_width_ = 0.075;       // 夹爪的最大张开宽度
         double table_top_z_ = 0.035;            // panda_link0 下桌面上表面高度
         double table_clearance_ = 0.015;        // 手指最低点离桌面的最小间隙
 
-        double w_score_ = 0.6;
+        double w_score_ = 0.4;
         double w_joint_ = 0.3;
-        double w_approach_ = 0.1;
+        double w_approach_ = 0.3;
 
         // 日志统计输出
         FilterStageStats last_stats_;

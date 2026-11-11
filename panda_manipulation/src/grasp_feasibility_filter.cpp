@@ -40,7 +40,6 @@ void GraspFeasibilityFilter::loadParameters() {
     // 检查节点中是否含有指定的参数，存在则获得其当前值，不存在则设置为默认值
     max_candidates_ = get_int("max_candidates_", 12);
     ik_timeout_ = get_double("ik_timeout_", 0.05);
-    tcp_offset_ = get_double("tcp_offset_", 0.1034);
     finger_max_width_ = get_double("finger_max_width_", 0.075);             
     table_top_z_ = get_double("table_top_z_", 0.035);          
     table_clearance_ = get_double("table_clearance_", 0.015);    
@@ -153,7 +152,22 @@ std::vector<GraspEvaluation> GraspFeasibilityFilter::graspPoseFilter(
 
     // 4.2 计算 model_frame 与 panda_link0 之间的变换关系
     // 计算的原因是 setFromIK 默认是相对 URDF 根坐标系，项目中即为 base_footprint；而传入的位姿是相对 panda_link0 的
+    // 我们现在需要求解 panda_link8 在 base_footprint 下的 solveIK 是否有解
+    // base_footprint_to_link8 = base_footprint_to_link0 * link0_to_grasptcp * grasptcp_to_tcp * tcp_to_link8
+    // 首先获取 base_footprint_to_link0
     const Eigen::Isometry3d tf_model_to_link0 = robot_state.getGlobalLinkTransform(base_link_);
+
+    // 其次获取 link0_to_graspnetTCP，这个 TF 是固定的
+    Eigen::Isometry3d tf_grasptcp_to_tcp = Eigen::Isometry3d::Identity();
+    tf_grasptcp_to_tcp.linear() <<
+        0.0, 0.0, 1.0,
+        0.0, 1.0, 0.0,
+        -1.0, 0.0, 0.0;
+
+    // 最后获取 tcp_to_link8，利用 robot model 求相对变换
+    const Eigen::Isometry3d tf_model_to_link8 = robot_state.getGlobalLinkTransform(tip_link_);
+    const Eigen::Isometry3d tf_model_to_tcp = robot_state.getGlobalLinkTransform("grasp_tcp");
+    const Eigen::Isometry3d tf_tcp_to_link8 = tf_model_to_tcp.inverse() * tf_model_to_link8;
 
     // 5. 对每个抓取位姿进行评估
     for (std::size_t index : index_array) {
@@ -172,7 +186,7 @@ std::vector<GraspEvaluation> GraspFeasibilityFilter::graspPoseFilter(
         last_stats_.table_ok++;
 
         // 5.3 使用 IK 求解器查看是否存在稳定解
-        const Eigen::Isometry3d target_pose = tf_model_to_link0 * poseToEigen(graspEval.pose.pose);
+        const Eigen::Isometry3d target_pose = tf_model_to_link0 * poseToEigen(graspEval.pose.pose) * tf_grasptcp_to_tcp * tf_tcp_to_link8;
         moveit::core::RobotState pose_solution(robot_model_);
         const auto ik_start_time = std::chrono::steady_clock::now();
         if (!solveIK(target_pose, robot_state, pose_solution)) {
@@ -290,12 +304,11 @@ double GraspFeasibilityFilter::computeJointTravel(const moveit::core::RobotState
 
 // ----- 估算手指最低点是否会碰到桌面 -----
 bool GraspFeasibilityFilter::checkTableClearance(const geometry_msgs::msg::PoseStamped& pose) const {
-    // 1. 先获取两个方向：工具接近方向(Z轴)和夹爪张开方向(Y轴)
-    const Eigen::Vector3d dir_approach = poseToEigen(pose.pose).linear().col(2);
+    // 1. 先获取夹爪张开方向(Y轴)
     const Eigen::Vector3d dir_open = poseToEigen(pose.pose).linear().col(1);
 
-    // 2. 先计算 TCP 的位置：link8 位置 + tcp_offset_ * dir_approach
-    const double z_tcp = pose.pose.position.z + tcp_offset_ * dir_approach.z();
+    // 2. 先计算 TCP 的位置
+    const double z_tcp = pose.pose.position.z;
 
     // 3. 考虑最极端的情况，当夹爪完全打开时，计算相对较低的那一根手指的高度
     const double z_finger_low = z_tcp - 0.5 * finger_max_width_ * std::abs(dir_open.z());
@@ -317,7 +330,7 @@ double GraspFeasibilityFilter::computeRank(const GraspEvaluation& graspEval, dou
     const double r_joint = 1.0 / (1.0 + std::max(0.0, graspEval.joint_travel));
 
     // 3. 角度偏好：考虑到物体摆放在桌面上，优先考虑从上往下的夹取位姿
-    const double r_approach = -poseToEigen(graspEval.pose.pose).linear().col(2).z();
+    const double r_approach = -poseToEigen(graspEval.pose.pose).linear().col(0).z();
 
     // 返回最终的加权得分
     return w_score_ * r_score + w_joint_ * r_joint + w_approach_ * r_approach;
