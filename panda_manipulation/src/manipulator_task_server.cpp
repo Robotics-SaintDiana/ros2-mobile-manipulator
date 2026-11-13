@@ -47,6 +47,10 @@ class ManipulatorTaskServer : public rclcpp::Node
         }    
 
     private:
+        // 每个子任务的枚举状态类型
+        // GraspNet 推理任务可能的结果：推理成功；推理超时；没有候选抓取位姿；推理失败
+        enum class GraspNetResultStatus {SUCCESS, TIMEOUT, NO_CANDIDATES, FAILED};
+
         rclcpp_action::Server<ManipulateObject>::SharedPtr action_server_;
         rclcpp_action::Client<InferGrasps>::SharedPtr graspnet_client_;
         std::shared_ptr<ManipulatorExecutor> manipulator_executor_;
@@ -142,13 +146,14 @@ class ManipulatorTaskServer : public rclcpp::Node
             if (task_goal->action_type == "pick") {
                 // 1. 控制机械臂获取物体的点云数据
                 sensor_msgs::msg::PointCloud2 filiter_cloud;
-                if (!getFusionResult(filiter_cloud)) {
+                geometry_msgs::msg::PoseStamped object_pose;
+                if (!getFusionResult(filiter_cloud, object_pose)) {
                     goalFailed(goal_handle, "pick: failed to capture fused point cloud");
                     return;
                 }
 
                 // 2. 将获取到的最新点云数据传给 GraspNet 进行推理，获取相应的抓取位姿
-                if (!getGraspnetResult(filiter_cloud, grasp_result)) {
+                if (getGraspnetResult(filiter_cloud, grasp_result) != GraspNetResultStatus::SUCCESS) {
                     goalFailed(goal_handle, "pick: graspnet inference failed");
                     return;
                 }
@@ -158,7 +163,7 @@ class ManipulatorTaskServer : public rclcpp::Node
                 std::vector<double> scores_double(grasp_result->scores.begin(), grasp_result->scores.end());
                 std::vector<double> widths_double(grasp_result->widths.begin(), grasp_result->widths.end());
                 const auto filterResult = feasibility_filter_->graspPoseFilter(
-                    grasp_result->grasp_poses, scores_double, widths_double, current_joints);
+                    grasp_result->grasp_poses, scores_double, widths_double, current_joints, object_pose.pose.position.x, object_pose.pose.position.y);
                 if (filterResult.empty()) {
                     goalFailed(goal_handle, "pick: no feasible grasp after filtering");
                     return;
@@ -225,9 +230,8 @@ class ManipulatorTaskServer : public rclcpp::Node
         // ------------ 辅助函数部分 -------------
         // -------------------------------------
         // 控制机械臂在三个不同的位置获取三份点云数据，并将这些点云数据进行融合
-        bool getFusionResult(sensor_msgs::msg::PointCloud2& filiter_cloud) {
+        bool getFusionResult(sensor_msgs::msg::PointCloud2& filiter_cloud, geometry_msgs::msg::PoseStamped& object_pose) {
             // 1. 利用顶部相机获取目标物体的大致位置
-            geometry_msgs::msg::PoseStamped object_pose;
             if (!perception_executor_->getObjectCenterPosition(object_pose)) {
                 RCLCPP_ERROR(this->get_logger(), "Failed to calculate object's center position!");
                 return false;
@@ -252,114 +256,158 @@ class ManipulatorTaskServer : public rclcpp::Node
                 return false;
             }
 
-            // 3.3 获取机械臂到达位置
-            getObservationPoses(arm_poses, object_pose, camera_in_hand);
-
-            // 4. 控制机械臂运动至指定位置，每运动到一个地方就获取一次点云数据
+            // 此处存在的情况为：机械臂无法到达某个指定位置；点云融合失败
+            // 针对机械臂规划问题，采取跳过不执行策略，最终只要有两个位置能够到达且采集到了点云即判定成功
+            // 针对点云融合失败，采用变更机械臂位置点的策略重新采集点云，最多尝试两次
             std::vector<sensor_msgs::msg::PointCloud2> object_clouds;
-            for (int i = 0; i < 3; i++) {  
-                // 先控制机械臂运动到指定的位置，因为运动是阻塞式的，只有全部完成了才会返回 
-                // 从第 2 个位置去第 3 个位置时，先回到中间过渡点，防止运动规划失败或者碰到物体
-                if (i == 2) {
-                    if (!manipulator_executor_->armMoveExecutor(arm_poses[0])) {
-                        return false;
+            for (int attempt = 0; attempt < 2; attempt++) {
+                // 清除点云数据，防止重试的过程中夹杂了之前的数据
+                object_clouds.clear();
+
+                // 3.3 获取机械臂到达位置
+                getObservationPoses(arm_poses, object_pose, camera_in_hand, attempt);
+
+                // 4. 控制机械臂运动至指定位置，每运动到一个地方就获取一次点云数据
+                for (int i = 0; i < 3; i++) {
+                    // 从第 2 个位置去第 3 个位置时，由于跨度较大，容易出现规划失败问题
+                    // 这里先回到中间过渡点，如果无法回归则直接尝试前往第 3 个位置
+                    if (i == 2) {
+                        if (!manipulator_executor_->armMoveExecutor(arm_poses[0])) {
+                            RCLCPP_WARN(this->get_logger(), "Transition pose failed, go directly to view 2");
+                        } else {
+                            rclcpp::sleep_for(std::chrono::milliseconds(500));
+                        }
                     }
+
+                    // 其他情况下直接控制机械臂运动到指定位置即可，若规划失败则再尝试一次，均失败则跳过此次运动
+                    const auto move_start_stamp = this->now();
+                    if (!manipulator_executor_->armMoveExecutor(arm_poses[i])) {
+                        RCLCPP_WARN(this->get_logger(), "View %d plan failed, retry once", i);
+                        if (!manipulator_executor_->armMoveExecutor(arm_poses[i])) {
+                            RCLCPP_WARN(this->get_logger(), "View %d plan failed twice, skip", i);
+                            continue;
+                        }
+                    }
+
+                    // 稍微延时一下，等待仿真稳定且获取到了最新的点云数据
                     rclcpp::sleep_for(std::chrono::milliseconds(500));
+
+                    // 获取点云数据
+                    sensor_msgs::msg::PointCloud2 hand_camera_cloud;
+                    if (!perception_executor_->getHandCameraLatestProcessedCloud(hand_camera_cloud, move_start_stamp)) {
+                        RCLCPP_WARN(this->get_logger(), "Failed to capture point cloud at pose %d, skip", i);
+                        continue;
+                    }
+
+                    object_clouds.push_back(hand_camera_cloud);
                 }
 
-                // 运动到当前目标位置
-                const auto move_start_stamp = this->now();
-                if (!manipulator_executor_->armMoveExecutor(arm_poses[i])) return false;
-
-                // 稍微延时一下，等待仿真稳定且获取到了最新的点云数据
-                rclcpp::sleep_for(std::chrono::milliseconds(500));
-
-                // 获取点云数据
-                sensor_msgs::msg::PointCloud2 hand_camera_cloud;
-                if (!perception_executor_->getHandCameraLatestProcessedCloud(hand_camera_cloud, move_start_stamp)) {
-                    RCLCPP_ERROR(this->get_logger(), "Failed to capture point cloud at pose %d", i);
-                    return false;
+                // 拍摄完成后让机械臂回到 Home 点，方便后续的操作
+                if (!manipulator_executor_->moveHome()) {
+                    RCLCPP_WARN(this->get_logger(), "Back home timeout, retry once");
+                    if (!manipulator_executor_->moveHome()) {
+                        RCLCPP_WARN(this->get_logger(), "Back home timeout twice, skip");
+                    }
                 }
 
-                object_clouds.push_back(hand_camera_cloud);
+                // 如果获取到了至少两个视角的点云，即认为任务成功可以融合
+                if (object_clouds.size() >= 2) {
+                    // 5. 将点云数据进行融合
+                    filiter_cloud = perception_executor_->getHandCameraFusionCloud(object_clouds);
+                    if (!filiter_cloud.data.empty()) {
+                        return true;
+                    }
+                }
+                RCLCPP_WARN(this->get_logger(), "Attempt %d: only %zu views, skip fusion", attempt, object_clouds.size());
             }
 
-            // 拍摄完成后让机械臂回到 Home 点，方便后续的抓取操作
-            if (!manipulator_executor_->moveHome()) return false;
-
-            // 5. 将点云数据进行融合
-            filiter_cloud = perception_executor_->getHandCameraFusionCloud(object_clouds);
-            if (filiter_cloud.data.empty()) {
-                RCLCPP_ERROR(this->get_logger(), "Hand camera fusion cloud is empty!");
-                return false;
-            }
-
-            return true;
+            return false;
         }
 
-
         // 向 GraspNet 中传入点云数据，获取 GraspNet 返回的推理结果
-        bool getGraspnetResult(const sensor_msgs::msg::PointCloud2& cloud, std::shared_ptr<InferGrasps::Result>& grasp_result) {
-            // 1. 检查 Graspnet 服务器是否准备完毕
-            if (!graspnet_client_->wait_for_action_server(std::chrono::seconds(5))) {
-                RCLCPP_ERROR(get_logger(), "GraspNet Action Server is not available.");
-                return false;
+        // 此处可能遇到的问题包括：与 GraspNet 服务器交互失败；GraspNet 推理超时；GraspNet 没有推理出候选位姿或者推理失败
+        // 针对与服务器交互失败以及推理超时，采用最多尝试三次的处理方式
+        // 针对没有推理出候选位姿或者推理失败，向上反馈失败码，交由上级处理
+        GraspNetResultStatus getGraspnetResult(const sensor_msgs::msg::PointCloud2& cloud, std::shared_ptr<InferGrasps::Result>& grasp_result) {
+            for (int attempt = 0; attempt < 3; attempt++) {
+                // 1. 检查 Graspnet 服务器是否准备完毕
+                if (!graspnet_client_->wait_for_action_server(std::chrono::seconds(5))) {
+                    RCLCPP_WARN(get_logger(), "GraspNet Action Server is not available. Retry...");
+                    continue;
+                }
+
+                // 2. 向 Graspnet 服务器进行发送的点云数据，并等待服务器接受
+                InferGrasps::Goal grasp_goal;
+                grasp_goal.cloud = cloud;
+
+                auto send_grasp_goal_options = rclcpp_action::Client<InferGrasps>::SendGoalOptions();
+                auto grasp_goal_future = graspnet_client_->async_send_goal(grasp_goal, send_grasp_goal_options);
+                if (grasp_goal_future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+                    RCLCPP_WARN(get_logger(), "Timed out waiting for GraspNet goal response. Retry...");
+                    continue;
+                }
+
+                // 3. 获取服务器返回的句柄
+                auto grasp_goal_handle = grasp_goal_future.get();
+                if (!grasp_goal_handle) {
+                    RCLCPP_WARN(get_logger(), "GraspNet rejected the goal. Retry...");
+                    continue;
+                }
+
+                // 4. 启动 graspnet 推理，最多等待 5s
+                auto grasp_result_future = graspnet_client_->async_get_result(grasp_goal_handle);
+                if (grasp_result_future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+                    // 如果超时了，先取消本次推理请求，然后重试
+                    auto cancel_future = graspnet_client_->async_cancel_goal(grasp_goal_handle);
+                    cancel_future.wait_for(std::chrono::seconds(1));
+                    RCLCPP_WARN(get_logger(), "Timed out waiting for GraspNet inference result. Retry...");
+                    continue;
+                }
+
+                // 5. 检查此次通信是否成功
+                auto grasp_wrapped_result = grasp_result_future.get();
+                if (grasp_wrapped_result.code != rclcpp_action::ResultCode::SUCCEEDED) {
+                    RCLCPP_WARN(get_logger(), "GraspNet action did not succeed. Retry...");
+                    continue;
+                }
+
+                // 6. 检查 Graspnet 推理过程是否成功
+                auto graspnet_inference_result = grasp_wrapped_result.result;
+                if (!graspnet_inference_result || !graspnet_inference_result->success) {
+                    // 先判断 Graspnet 推理是不是没有候选位姿
+                    if (graspnet_inference_result && graspnet_inference_result->message.find("No valid") != std::string::npos) {
+                        RCLCPP_ERROR(get_logger(), "GraspNet result no candidates.");
+                        return GraspNetResultStatus::NO_CANDIDATES;
+                    }
+
+                    // 否则即为推理失败
+                    RCLCPP_ERROR(get_logger(), "GraspNet failed.");
+                    return GraspNetResultStatus::FAILED;
+                }
+
+                // 7. 获取 Graspnet 的推理结果
+                grasp_result->grasp_poses = graspnet_inference_result->grasp_poses;
+                grasp_result->scores = graspnet_inference_result->scores;
+                grasp_result->widths = graspnet_inference_result->widths;
+                return GraspNetResultStatus::SUCCESS;
             }
 
-            // 2. 向 Graspnet 服务器进行发送的点云数据，并等待服务器接受
-            InferGrasps::Goal grasp_goal;
-            grasp_goal.cloud = cloud;
-
-            auto send_grasp_goal_options = rclcpp_action::Client<InferGrasps>::SendGoalOptions();
-            auto grasp_goal_future = graspnet_client_->async_send_goal(grasp_goal, send_grasp_goal_options);
-            if (grasp_goal_future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
-                RCLCPP_ERROR(get_logger(), "Timed out waiting for GraspNet goal response.");
-                return false;
-            }
-
-            // 3. 获取服务器返回的句柄
-            auto grasp_goal_handle = grasp_goal_future.get();
-            if (!grasp_goal_handle) {
-                RCLCPP_ERROR(get_logger(), "GraspNet rejected the goal.");
-                return false;
-            }
-
-            // 4. 启动 graspnet 推理，等待 10s 等待返回的结果
-            auto grasp_result_future = graspnet_client_->async_get_result(grasp_goal_handle);
-            if (grasp_result_future.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
-                RCLCPP_ERROR(get_logger(), "Timed out waiting for GraspNet inference result.");
-                return false;
-            }
-
-            // 5. 检查此次通信是否成功
-            auto grasp_wrapped_result = grasp_result_future.get();
-            if (grasp_wrapped_result.code != rclcpp_action::ResultCode::SUCCEEDED) {
-                RCLCPP_ERROR(get_logger(), "GraspNet action did not succeed.");
-                return false;
-            }
-
-            // 6. 检查 Graspnet 推理过程是否成功
-            auto graspnet_inference_result = grasp_wrapped_result.result;
-            if (!graspnet_inference_result || !graspnet_inference_result->success) {
-                RCLCPP_ERROR(get_logger(), "GraspNet inference failed: %s", graspnet_inference_result ? graspnet_inference_result->message.c_str() : "Empty result");
-                return false;
-            }
-
-            // 7. 获取 Graspnet 的推理结果
-            grasp_result->grasp_poses = graspnet_inference_result->grasp_poses;
-            grasp_result->scores = graspnet_inference_result->scores;
-            grasp_result->widths = graspnet_inference_result->widths;
-            return true;
+            return GraspNetResultStatus::TIMEOUT;
         }
 
         // 根据相机获取到的物体中心位置，生成相机拍摄的三个位姿
-        void getObservationPoses(std::vector<geometry_msgs::msg::PoseStamped>& arm_poses, const geometry_msgs::msg::PoseStamped& object_pose, const tf2::Transform& camera_in_hand) {
+        // 第一次尝试拍摄 Y 轴两侧，第二次尝试拍摄 X 轴两侧
+        void getObservationPoses(std::vector<geometry_msgs::msg::PoseStamped>& arm_poses, const geometry_msgs::msg::PoseStamped& object_pose, const tf2::Transform& camera_in_hand, int attempt) {
              const tf2::Vector3 object(object_pose.pose.position.x,
                                   object_pose.pose.position.y,
                                   object_pose.pose.position.z);
 
-            const double tilt = 45.0 * M_PI / 180.0;      // 侧视角倾角
-            const double cam_distance = 0.35;             // 相机到物体的距离
+            const double tilt = (attempt == 0) ? 45.0 * M_PI / 180.0
+                                               : 40.0 * M_PI / 180.0;      // 侧视角倾角
+            const double cam_distance = (attempt == 0) ? 0.35 : 0.30;      // 相机到物体的距离
+            const double yaw = (attempt == 0) ? 0.0 : M_PI / 2.0;
+            const double s = std::sin(tilt);
+            const double c = std::cos(tilt);
 
             // 相机外参常量
             const tf2::Vector3    p_cam_in_hand = camera_in_hand.getOrigin();
@@ -372,8 +420,8 @@ class ManipulatorTaskServer : public rclcpp::Node
 
             std::vector<tf2::Vector3> view_dirs;
             view_dirs.push_back(tf2::Vector3(0.0, 0.0, 1.0));
-            view_dirs.push_back(tf2::Vector3(0.0,  std::sin(tilt), std::cos(tilt)));
-            view_dirs.push_back(tf2::Vector3(0.0, -std::sin(tilt), std::cos(tilt)));
+            view_dirs.push_back(tf2::Vector3( s * std::sin(yaw),  s * std::cos(yaw), c));
+            view_dirs.push_back(tf2::Vector3(-s * std::sin(yaw), -s * std::cos(yaw), c));
 
             for (std::size_t i = 0; i < arm_poses.size() && i < view_dirs.size(); ++i) {
                 tf2::Vector3 u = view_dirs[i];

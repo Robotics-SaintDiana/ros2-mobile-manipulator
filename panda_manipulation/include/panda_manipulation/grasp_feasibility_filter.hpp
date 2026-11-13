@@ -13,6 +13,8 @@
 #include <moveit/robot_model/joint_model_group.h>
 #include <moveit/robot_state/robot_state.h>
 #include <moveit/kinematics_base/kinematics_base.h>
+#include <moveit/move_group_interface/move_group_interface.h>
+#include <moveit/planning_scene/planning_scene.h>
 
 // 一个 GraspNet 输出的候选抓取姿态的最终评估结果
 struct GraspEvaluation
@@ -21,12 +23,6 @@ struct GraspEvaluation
     geometry_msgs::msg::PoseStamped pose;
     double score = 0.0;
     double width = 0.0;
-
-    // ---- 每一项的评估结果以及最终的可行性结果 ----
-    bool is_ik_ok    = false;       // 该位姿的 IK 是否有解
-    bool is_joint_ok = false;       // 该位姿的关节行程是否在阈值内(防止机械臂绕大圈)
-    bool is_table_ok = false;       // 该位姿是否可能导致夹爪处于桌面以下
-    bool is_feasible = false;       // 该位姿是否可行(只有前三项判定全部通过才认为是可行的)
 
     // ---- 衡量一个抓取位姿优劣的判定指标 ----
     double joint_travel = 0.0;              // 关节总行程，sum |q_ik - q_now|，单位 rad
@@ -45,6 +41,10 @@ struct FilterStageStats
     int table_ok = 0;            // 符合桌面几何条件的位姿数量
     int ik_ok = 0;               // 有 IK 稳定解的数量
     int joint_ok = 0;            // 关节角度变化符合要求的数量
+    int hover_ok = 0;
+    int pre_grasp_ok = 0;
+    int collision_ok = 0;
+    int plan_ok = 0;
     int feasible = 0;            // 最终具有可行性的解的数量
 };
 
@@ -59,7 +59,8 @@ class GraspFeasibilityFilter
             const std::vector<geometry_msgs::msg::PoseStamped> & candidates,
             const std::vector<double> & scores,
             const std::vector<double> & widths,
-            const std::vector<double> & current_joints);
+            const std::vector<double> & current_joints,
+            double table_center_x, double table_center_y);
             
     private:
         // 加载本节点的参数
@@ -80,6 +81,9 @@ class GraspFeasibilityFilter
         // 估算手指最低点是否会碰到桌面
         bool checkTableClearance(const geometry_msgs::msg::PoseStamped& pose) const;
 
+        // 判断 Moveit 能否计算出到目标位置的运动轨迹
+        bool hasPlanToPose(const geometry_msgs::msg::PoseStamped& target_pose, moveit_msgs::msg::RobotTrajectory& pose_traj);
+
         // 计算合理的抓取位姿的排名分数
         double computeRank(const GraspEvaluation& graspEval, double max_score) const;
 
@@ -89,11 +93,16 @@ class GraspFeasibilityFilter
         // 工具函数：geometry_msgs::Pose -> Eigen::Isometry3d
         static Eigen::Isometry3d poseToEigen(const geometry_msgs::msg::Pose & pose);
 
+        // 工具函数：向场景中添加桌子用来判断机械臂在运动过程中是否会与其发生碰撞
+        void addPickTableToScene(const planning_scene::PlanningScenePtr& scene, double table_center_x, double table_center_y);
+
         // ----- ROS & MoveIt 句柄 -----
         rclcpp::Node::SharedPtr node_;
         std::unique_ptr<robot_model_loader::RobotModelLoader> robot_model_loader_;
         moveit::core::RobotModelPtr robot_model_;
         const moveit::core::JointModelGroup* joint_model_group_ = nullptr;
+        std::shared_ptr<moveit::planning_interface::MoveGroupInterface> arm_group_;
+        std::shared_ptr<planning_scene::PlanningScene> planning_scene_;
         bool is_node_ready_ = false;
 
         // ----- 节点中需要使用到的参数 -----
@@ -104,12 +113,19 @@ class GraspFeasibilityFilter
         int max_candidates_ = 12;               // 最多只对前 12 个抓取位姿进行评估，防止计算量过大
         double ik_timeout_ = 0.05;              // 单次 IK 超时（秒）
         double finger_max_width_ = 0.075;       // 夹爪的最大张开宽度
-        double table_top_z_ = 0.035;            // panda_link0 下桌面上表面高度
         double table_clearance_ = 0.015;        // 手指最低点离桌面的最小间隙
 
-        double w_score_ = 0.4;
+        double w_score_ = 0.3;
         double w_joint_ = 0.3;
-        double w_approach_ = 0.3;
+        double w_approach_ = 0.4;
+
+        double hover_height_   = 0.30;          // 高空悬停：距抓取点 30cm 的空域
+        double pregrasp_above_ = 0.12;          // 预抓取：指尖悬在抓取点上方 12cm
+        
+        double table_top_z_ = 0.035;
+        double table_thickness_ = 0.10;
+        double pick_table_size_x_ = 0.60;    
+        double pick_table_size_y_ = 0.60; 
 
         // 日志统计输出
         FilterStageStats last_stats_;

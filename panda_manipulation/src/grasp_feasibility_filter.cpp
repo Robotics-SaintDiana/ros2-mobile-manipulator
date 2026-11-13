@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <tf2_eigen/tf2_eigen.hpp>
 
 // 构造函数
 GraspFeasibilityFilter::GraspFeasibilityFilter(const rclcpp::Node::SharedPtr& node) : node_(node)  {
@@ -40,12 +41,17 @@ void GraspFeasibilityFilter::loadParameters() {
     // 检查节点中是否含有指定的参数，存在则获得其当前值，不存在则设置为默认值
     max_candidates_ = get_int("max_candidates_", 12);
     ik_timeout_ = get_double("ik_timeout_", 0.05);
-    finger_max_width_ = get_double("finger_max_width_", 0.075);             
-    table_top_z_ = get_double("table_top_z_", 0.035);          
+    finger_max_width_ = get_double("finger_max_width_", 0.075);                      
     table_clearance_ = get_double("table_clearance_", 0.015);    
-    w_score_ = get_double("w_score_", 0.6);
-    w_joint_ = get_double("w_joint_", 0.3);
-    w_approach_ = get_double("w_approach_", 0.1);
+    w_score_ = get_double("w_score_", 0.30);
+    w_joint_ = get_double("w_joint_", 0.30);
+    w_approach_ = get_double("w_approach_", 0.40);
+    hover_height_ = get_double("hover_height_", 0.30);
+    pregrasp_above_ = get_double("pregrasp_above_", 0.12);
+    table_thickness_ = get_double("table_thickness_", 0.10);
+    pick_table_size_x_= get_double("pick_table_size_x_", 0.60);
+    pick_table_size_y_ = get_double("pick_table_size_y_", 0.60);
+    table_top_z_ = get_double("table_top_z_", 0.035);
 }
 
 // ----- 节点的初始化函数 -----
@@ -95,6 +101,16 @@ bool GraspFeasibilityFilter::filterInitialize() {
         return false;
     }
 
+    // 4. 初始化运动规划组，用于检验机械臂能否到达指定的位姿点
+    arm_group_ = std::make_shared<moveit::planning_interface::MoveGroupInterface>(node_, "panda_arm");
+    arm_group_->setPoseReferenceFrame("panda_link0");
+    arm_group_->setEndEffectorLink("panda_link8");
+    arm_group_->setPlanningTime(0.5);          
+    arm_group_->setNumPlanningAttempts(1);
+
+    // 5. 初始化场景规划器，用于将场景中的物体加入碰撞规划组，测试抓取位姿是否会和桌面等物体发生碰撞
+    planning_scene_ = std::make_shared<planning_scene::PlanningScene>(robot_model_);
+
     return true;
 }
 
@@ -103,7 +119,8 @@ std::vector<GraspEvaluation> GraspFeasibilityFilter::graspPoseFilter(
             const std::vector<geometry_msgs::msg::PoseStamped> & candidates,
             const std::vector<double> & scores,
             const std::vector<double> & widths,
-            const std::vector<double> & current_joints) 
+            const std::vector<double> & current_joints,
+            double table_center_x, double table_center_y) 
 {
     // 返回的评估结果
     std::vector<GraspEvaluation> filterResult; 
@@ -182,7 +199,6 @@ std::vector<GraspEvaluation> GraspFeasibilityFilter::graspPoseFilter(
             graspEval.reject_reason = "below_table";
             continue;
         }
-        graspEval.is_table_ok = true;
         last_stats_.table_ok++;
 
         // 5.3 使用 IK 求解器查看是否存在稳定解
@@ -195,16 +211,72 @@ std::vector<GraspEvaluation> GraspFeasibilityFilter::graspPoseFilter(
         }
         graspEval.ik_time_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - ik_start_time).count();
-        graspEval.is_ik_ok = true;
         last_stats_.ik_ok++;
 
         // 5.4 对机器人的关节行程进行检查
         graspEval.joint_travel = computeJointTravel(pose_solution, current_joints);
-        graspEval.is_joint_ok = true;
         last_stats_.joint_ok++;
 
-        // 5.5 通过上述检测的认为改位姿是合适的，计算其最终的排名分并追加进结果数组
-        graspEval.is_feasible = true;
+        // 5.5 对 hover 和 pre_grasp 两个中间位置使用使用 IK 求解器查看是否存在稳定解
+        const Eigen::Isometry3d hover_link8 = target_pose * Eigen::Translation3d(0.0, 0.0, -hover_height_);
+        const Eigen::Isometry3d pre_grasp_link8 = target_pose * Eigen::Translation3d(0.0, 0.0, -pregrasp_above_);
+        moveit::core::RobotState hover_solution(robot_model_);
+        moveit::core::RobotState pre_grasp_solution(robot_model_);
+        if (!solveIK(hover_link8, robot_state, hover_solution)) {
+            graspEval.reject_reason = "no_hover_ik";
+            continue;
+        }
+        last_stats_.hover_ok++;
+
+        if (!solveIK(pre_grasp_link8, robot_state, pre_grasp_solution)) {
+            graspEval.reject_reason = "no_pre_grasp_ik";
+            continue;
+        }
+        last_stats_.pre_grasp_ok++;
+
+        // 5.6 检查机械臂肘部运动至以上三个位置的过程中是否可能会和场景中的桌面等物体发生碰撞
+        // 5.6.1 先向场景中添加桌面，不考虑桌面和 panda_link0 之间的碰撞
+        addPickTableToScene(planning_scene_, table_center_x, table_center_y);
+
+        // 5.6.2 将夹爪设置为张开，以贴合实际的抓取场景
+        auto openGripperState = [&](const moveit::core::RobotState& pose_solution) {
+            moveit::core::RobotState temp_state = pose_solution;
+            const double finger1_open = 0.04;
+            const double finger2_open = -0.04;
+            temp_state.setJointPositions("panda_finger_joint1", &finger1_open);
+            temp_state.setJointPositions("panda_finger_joint2", &finger2_open);
+            temp_state.update();
+            return temp_state;
+        };
+
+        // 5.6.3 对运动轨迹进行碰撞判断
+        const auto hover_state = openGripperState(hover_solution);
+        const auto pre_grasp_state = openGripperState(pre_grasp_solution);
+        const auto grasp_state = openGripperState(pose_solution);
+
+        if (planning_scene_->isStateColliding(hover_state, "panda_arm", true)) continue;
+        if (planning_scene_->isStateColliding(pre_grasp_state, "panda_arm", true)) continue;
+        if (planning_scene_->isStateColliding(grasp_state, "panda_arm", true)) continue;
+
+        last_stats_.collision_ok++;
+
+        // 5.7 检查机器人能否从当前位置运动至 hover 位置
+        // 5.7.1 先计算 hover 位置在 Panda_link0 下的位姿
+        Eigen::Isometry3d hover_link0 = tf_model_to_link0.inverse() * hover_link8;
+        geometry_msgs::msg::PoseStamped hover_link0_pose;
+        hover_link0_pose.pose = tf2::toMsg(hover_link0);
+        hover_link0_pose.header.stamp = node_->now();
+        hover_link0_pose.header.frame_id = "panda_link0";
+
+        // 5.7.2 检查能否运动
+        moveit_msgs::msg::RobotTrajectory hover_traj;
+        if (!hasPlanToPose(hover_link0_pose, hover_traj)) {
+            graspEval.reject_reason = "hover_plan_failed";
+            continue;
+        }
+        last_stats_.plan_ok++;
+
+        // 5.8 通过上述检测的认为改位姿是合适的，计算其最终的排名分并追加进结果数组
         graspEval.rank = computeRank(graspEval, max_score);
         filterResult.push_back(graspEval);
     }
@@ -321,6 +393,17 @@ bool GraspFeasibilityFilter::checkTableClearance(const geometry_msgs::msg::PoseS
     return true;
 }
 
+// ----- 判断 Moveit 能否计算出到目标位置的运动轨迹 -----
+bool GraspFeasibilityFilter::hasPlanToPose(const geometry_msgs::msg::PoseStamped& target_pose, moveit_msgs::msg::RobotTrajectory& pose_traj) {
+    arm_group_->setStartStateToCurrentState();
+    arm_group_->clearPoseTargets();
+    arm_group_->setPoseTarget(target_pose);
+    moveit::planning_interface::MoveGroupInterface::Plan plan;
+    const bool has_plan = (arm_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
+    if (has_plan) pose_traj = plan.trajectory_;
+    return has_plan;
+}
+
 // ----- 计算可行抓取位姿的排序分 -----
 double GraspFeasibilityFilter::computeRank(const GraspEvaluation& graspEval, double max_score) const {
     // 1. 先将本批内的分数进行归一化
@@ -339,12 +422,16 @@ double GraspFeasibilityFilter::computeRank(const GraspEvaluation& graspEval, dou
 // ----- 输出调试日志 -----
 void GraspFeasibilityFilter::printLog() {
     RCLCPP_INFO(node_->get_logger(),
-        "[FILTER] %d candidates -> preselected %d -> table_ok %d -> ik_ok %d -> joint_ok %d -> feasible %d",
+        "[FILTER] %d candidates -> preselected %d -> table_ok %d -> ik_ok %d -> joint_ok %d -> hover_ok %d -> pre_grasp_ok %d -> collision_ok %d -> plan_ok %d -> feasible %d",
         last_stats_.total,
         last_stats_.preselected,
         last_stats_.table_ok,
         last_stats_.ik_ok,
         last_stats_.joint_ok,
+        last_stats_.hover_ok,
+        last_stats_.pre_grasp_ok,
+        last_stats_.collision_ok,
+        last_stats_.plan_ok,
         last_stats_.feasible);
 }
 
@@ -360,4 +447,33 @@ Eigen::Isometry3d GraspFeasibilityFilter::poseToEigen(const geometry_msgs::msg::
     T.translation() = Eigen::Vector3d(pose.position.x, pose.position.y, pose.position.z);
 
     return T;
+}
+
+// ----- 工具函数：向场景中添加桌子用来判断机械臂在运动过程中是否会与其发生碰撞
+void GraspFeasibilityFilter::addPickTableToScene(const planning_scene::PlanningScenePtr& scene, double table_center_x, double table_center_y) {
+    // 1. 向规划场景中添加桌面
+    moveit_msgs::msg::CollisionObject pick_table;
+    pick_table.header.frame_id = "panda_link0";
+    pick_table.id = "pick_table";
+
+    // 2. 设置该桌面的三维长度
+    shape_msgs::msg::SolidPrimitive pick_table_size;
+    pick_table_size.type = shape_msgs::msg::SolidPrimitive::BOX;
+    pick_table_size.dimensions.resize(3);
+    pick_table_size.dimensions[shape_msgs::msg::SolidPrimitive::BOX_X] = pick_table_size_x_;
+    pick_table_size.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Y] = pick_table_size_y_;
+    pick_table_size.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z] = table_thickness_;
+
+    // 3. 设置该桌面在 panda_link0 下的具体位置
+    geometry_msgs::msg::Pose pick_table_pose;
+    pick_table_pose.position.x = table_center_x;
+    pick_table_pose.position.y = table_center_y;
+    pick_table_pose.position.z = table_top_z_ - table_thickness_ / 2.0;
+    pick_table_pose.orientation.w = 1.0;
+
+    // 4. 将桌面放入规划场景之中
+    pick_table.primitives.push_back(pick_table_size);
+    pick_table.primitive_poses.push_back(pick_table_pose);
+    pick_table.operation = moveit_msgs::msg::CollisionObject::ADD;
+    scene->processCollisionObjectMsg(pick_table);
 }
