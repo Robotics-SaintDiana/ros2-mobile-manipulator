@@ -18,6 +18,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(tf2_eigen REQUIRED)
 
 include_directories(include)
 
@@ -31,8 +32,7 @@ add_executable(
 
 target_compile_features(manipulator_task_server PUBLIC cxx_std_17)
 
-ament_target_dependencies(
-  manipulator_task_server
+ament_target_dependencies(manipulator_task_server
   rclcpp
   rclcpp_action
   robot_manipulation_msgs
@@ -46,8 +46,35 @@ ament_target_dependencies(
   moveit_ros_planning_interface
 )
 
+add_executable(
+  robot_skills_server
+  src/skill_server.cpp
+  src/manipulator_executor.cpp
+  src/perception_executor.cpp
+  src/skills/move_home_server.cpp
+  src/skills/get_object_center.cpp
+)
+
+target_compile_features(robot_skills_server PUBLIC cxx_std_17)
+
+ament_target_dependencies(
+  robot_skills_server
+  rclcpp
+  rclcpp_action
+  robot_manipulation_msgs
+  sensor_msgs
+  geometry_msgs
+  std_msgs
+  pcl_conversions
+  pcl_ros
+  tf2
+  tf2_geometry_msgs
+  tf2_eigen
+  moveit_ros_planning_interface
+)
+
 install(
-  TARGETS manipulator_task_server
+  TARGETS manipulator_task_server robot_skills_server
   DESTINATION lib/${PROJECT_NAME}
 )
 

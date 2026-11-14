@@ -1,0 +1,8 @@
+<root main_tree_to_execute="PickAndPlace">
+  <BehaviorTree ID="PickAndPlace">
+    <Sequence>
+      <GetObjectCenter object_pose="{object_pose}" error_code="{error_code}"/>
+      <MoveHome/>
+    </Sequence>
+  </BehaviorTree>
+</root>

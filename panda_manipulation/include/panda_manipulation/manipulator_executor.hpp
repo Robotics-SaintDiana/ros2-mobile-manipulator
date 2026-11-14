@@ -1,9 +1,7 @@
-#ifndef PANDA_MANIPULATION__MANIPULATION_EXECUTOR_HPP_
-#define PANDA_MANIPULATION__MANIPULATION_EXECUTOR_HPP_
+#pragma once
 
 #include <vector>
 #include <mutex>
-#include <deque>
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/pose.hpp>
@@ -108,4 +106,3 @@ class ManipulatorExecutor
         const double plate_size_ = 0.25;  
 }; 
 
-#endif

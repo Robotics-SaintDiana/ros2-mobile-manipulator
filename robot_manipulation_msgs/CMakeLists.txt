@@ -13,9 +13,13 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/ErrorCode.msg"
   "action/ManipulateObject.action"
   "action/GenerateGrasps.action"
   "action/InferGrasps.action"
+
+  "action/MoveHome.action"
+  "action/GetObjectCenter.action"
   DEPENDENCIES action_msgs geometry_msgs std_msgs sensor_msgs
 )
 

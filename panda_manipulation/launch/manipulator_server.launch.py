@@ -28,4 +28,15 @@ def generate_launch_description():
         }]
     )
 
-    return LaunchDescription([manipulator_server_node])
+    robot_skills_server_node = Node(
+        package="panda_manipulation",
+        executable="robot_skills_server",
+        output="screen",
+        parameters=[{
+            'use_sim_time': True,
+            'robot_description': robot_description,
+            'robot_description_kinematics': kinematics,
+        }]
+    )
+
+    return LaunchDescription([manipulator_server_node, robot_skills_server_node])

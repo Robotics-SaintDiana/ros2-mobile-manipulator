@@ -271,7 +271,7 @@ sensor_msgs::msg::PointCloud2 PerceptionExecutor::getHandCameraFusionCloud(const
     return output_cloud;
 }
 
-// ----- 获取 pick 相机识别到的物体的中心位置 -----
+// ----- 获取 pick 相机识别到的物体的中心位置(临时) -----
 bool PerceptionExecutor::getObjectCenterPosition(geometry_msgs::msg::PoseStamped& object_pose) {
     // 这里常见的问题有：无法获取相机最新的点云数据；去除桌面后点云为空；以及 TF 变换获取失败
     // 以上三个问题均采用失败重试机制，最多尝试三次
@@ -356,6 +356,78 @@ bool PerceptionExecutor::getObjectCenterPosition(geometry_msgs::msg::PoseStamped
     // 重试三次后仍然错误则认为失败
     RCLCPP_ERROR(node_->get_logger(), "getObjectCenterPosition failed after 3 attempts");
     return false;
+}
+
+// ----- 获取 pick 相机识别到的物体的中心位置 -----
+PerceptionExecutor::GetObjectCenterStatus PerceptionExecutor::getObjectCenterPositionOnce(geometry_msgs::msg::PoseStamped& object_pose) {
+    // 1. 先获取 pick 相机最新的点云数据
+    sensor_msgs::msg::PointCloud2 pick_camera_latest_cloud;
+    rclcpp::Time start_time = node_->now();
+    if (!getPickCameraLatestProcessedCloud(pick_camera_latest_cloud, start_time)) {
+        return GetObjectCenterStatus::NO_DATA;
+    }
+
+    // 2. 去除点云数据中的桌面部分
+    auto pick_camera_lasted_cloud_ptr = std::make_shared<sensor_msgs::msg::PointCloud2>(pick_camera_latest_cloud);
+    sensor_msgs::msg::PointCloud2 filiter_cloud = processAndPublishCloud(pick_camera_lasted_cloud_ptr);
+    if (filiter_cloud.data.empty()) {
+        return GetObjectCenterStatus::NO_OBJECT;
+    }
+
+    // 3. 计算物体的中心位置作为物体的大致位置
+    // 3.1 首先先将过滤后的点云数据转为 PCL 原生点云
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
+    pcl::fromROSMsg(filiter_cloud, *pcl_cloud);
+    if (pcl_cloud->empty()) {
+        return GetObjectCenterStatus::PCL_FAILED;
+    }
+
+    // 3.2 计算三维平均坐标
+    Eigen::Vector4f centroid;
+    pcl::compute3DCentroid(*pcl_cloud, centroid);
+
+    // 3.3 把物体的中心位置变换到 panda_link0 坐标系下
+    const std::string cloud_frame_id = pick_camera_latest_cloud.header.frame_id;
+    geometry_msgs::msg::TransformStamped transform_stamped;
+    bool is_transform_found = false;
+
+    // 先尝试获取点云时间戳所对应的 tf 变换
+    try {
+        transform_stamped = tf_buffer_->lookupTransform(
+            "panda_link0", cloud_frame_id,
+            rclcpp::Time(pick_camera_latest_cloud.header.stamp, node_->get_clock()->get_clock_type()));
+        is_transform_found = true;
+    } catch (const tf2::TransformException &) {}
+
+    // 如果查询不到，再用当前时刻的 tf 变换
+    if (!is_transform_found) {
+        try {
+            transform_stamped = tf_buffer_->lookupTransform("panda_link0", cloud_frame_id, tf2::TimePointZero);
+        } catch (const tf2::TransformException & ex) {
+            return GetObjectCenterStatus::GET_TF_FAILED;
+        }
+    }
+
+    // 转换至 panda_link0 坐标系下
+    tf2::Transform tf_link0_to_camera;
+    tf2::fromMsg(transform_stamped.transform, tf_link0_to_camera);
+    const tf2::Vector3 point_in_link0 = tf_link0_to_camera * tf2::Vector3(centroid[0], centroid[1], centroid[2]);
+
+    // 3.4 返回物体的中心位置
+    object_pose.header.frame_id = "panda_link0";
+    object_pose.header.stamp = pick_camera_latest_cloud.header.stamp;
+
+    object_pose.pose.position.x = point_in_link0.x();
+    object_pose.pose.position.y = point_in_link0.y();
+    object_pose.pose.position.z = point_in_link0.z();
+
+    // 默认四元数为数值向下(因为此处仅仅是配合抓取物体时识别大致中心位置，不需要很精确)
+    object_pose.pose.orientation.x = 0.0;
+    object_pose.pose.orientation.y = 0.0;
+    object_pose.pose.orientation.z = 0.0;
+    object_pose.pose.orientation.w = 1.0;
+
+    return GetObjectCenterStatus::SUCCESS;    
 }
 
 // ----- 获取指定颜色托盘的放置位姿 -----

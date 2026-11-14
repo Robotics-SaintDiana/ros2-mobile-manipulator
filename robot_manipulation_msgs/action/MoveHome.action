@@ -1,0 +1,9 @@
+# Goal
+---
+# Result
+bool success
+string message
+int32 error_code
+---
+# Feedback
+string stage
