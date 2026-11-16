@@ -11,6 +11,7 @@ from rclpy.action import ActionServer
 from rclpy.action.server import GoalResponse, CancelResponse
 
 from robot_manipulation_msgs.action import InferGrasps
+from robot_manipulation_msgs.msg import ErrorCode
 from sensor_msgs.msg import PointCloud2
 from geometry_msgs.msg import PoseStamped
 import sensor_msgs_py.point_cloud2 as pc2
@@ -393,12 +394,10 @@ class GraspNetNode(Node):
     # ========================================================
     def goal_callback(self, goal_request):
         """决定是否接受新的推理请求。"""
-        self.get_logger().info("收到 GraspNet 推理请求")
         return GoalResponse.ACCEPT
 
     def cancel_callback(self, goal_handle):
         """处理客户端的取消请求。"""
-        self.get_logger().info("收到取消推理请求")
         return CancelResponse.ACCEPT
 
     def execute_callback(self, goal_handle):
@@ -414,6 +413,7 @@ class GraspNetNode(Node):
                 result.grasp_poses = []
                 result.scores = []
                 result.widths = []
+                result.error_code = ErrorCode.GRASPNET_EMPTY_CLOUD
 
                 goal_handle.abort()
                 return result
@@ -428,6 +428,7 @@ class GraspNetNode(Node):
                 result.grasp_poses = []
                 result.scores = []
                 result.widths = []
+                result.error_code = ErrorCode.GRASPNET_NO_CANDIDATES
 
                 goal_handle.abort()
                 return result
@@ -439,6 +440,7 @@ class GraspNetNode(Node):
                 result.grasp_poses = []
                 result.scores = []
                 result.widths = []
+                result.error_code = ErrorCode.GRASPNET_FAILED
 
                 goal_handle.abort()
                 return result
@@ -449,6 +451,7 @@ class GraspNetNode(Node):
             result.grasp_poses = grasp_poses
             result.scores = scores
             result.widths = widths
+            result.error_code = ErrorCode.SUCCESS
 
             self.get_logger().info(result.message)
             goal_handle.succeed()
@@ -462,6 +465,7 @@ class GraspNetNode(Node):
             result.grasp_poses = []
             result.scores = []
             result.widths = []
+            result.error_code = ErrorCode.GRASPNET_FAILED
 
             if goal_handle.is_active:
                 goal_handle.abort()

@@ -159,7 +159,9 @@ class ManipulatorTaskServer : public rclcpp::Node
                 }
 
                 // 3. 将 GraspNet 输出的推理结果进行运动学可行性过滤
-                const auto current_joints = manipulator_executor_->getCurrentJointValues();
+                auto current_joints_opt = manipulator_executor_->getCurrentJointValues();
+                if (!current_joints_opt) return;
+                const std::vector<double>& current_joints = current_joints_opt.value();
                 std::vector<double> scores_double(grasp_result->scores.begin(), grasp_result->scores.end());
                 std::vector<double> widths_double(grasp_result->widths.begin(), grasp_result->widths.end());
                 const auto filterResult = feasibility_filter_->graspPoseFilter(
@@ -398,7 +400,7 @@ class ManipulatorTaskServer : public rclcpp::Node
         // 根据相机获取到的物体中心位置，生成相机拍摄的三个位姿
         // 第一次尝试拍摄 Y 轴两侧，第二次尝试拍摄 X 轴两侧
         void getObservationPoses(std::vector<geometry_msgs::msg::PoseStamped>& arm_poses, const geometry_msgs::msg::PoseStamped& object_pose, const tf2::Transform& camera_in_hand, int attempt) {
-             const tf2::Vector3 object(object_pose.pose.position.x,
+            const tf2::Vector3 object(object_pose.pose.position.x,
                                   object_pose.pose.position.y,
                                   object_pose.pose.position.z);
 

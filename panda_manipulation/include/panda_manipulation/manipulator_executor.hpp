@@ -38,7 +38,7 @@ class ManipulatorExecutor
         bool getTransform(const std::string & target_frame, const std::string & source_frame, tf2::Transform & transform_out);
 
         // ----- 获取当前机械臂的所有关节角度状态 -----
-        std::vector<double> getCurrentJointValues();
+        std::optional<std::vector<double>> getCurrentJointValues();
 
         bool moveHome();
 

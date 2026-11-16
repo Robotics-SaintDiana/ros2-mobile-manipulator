@@ -3,9 +3,14 @@
 
 #include "panda_manipulation/manipulator_executor.hpp"
 #include "panda_manipulation/perception_executor.hpp"
+#include "panda_manipulation/grasp_feasibility_filter.hpp"
 
-#include "panda_manipulation/skills/move_home_server.hpp"
-#include "panda_manipulation/skills/get_object_center.hpp"
+#include "panda_manipulation/skills/get_object_center_server.hpp"
+#include "panda_manipulation/skills/prepare_pick_scene_server.hpp"
+#include "panda_manipulation/skills/cleanup_pick_scene_server.hpp"
+#include "panda_manipulation/skills/get_fusion_cloud_server.hpp"
+#include "panda_manipulation/skills/get_joint_values_server.hpp"
+#include "panda_manipulation/skills/filter_grasps_server.hpp"
 
 int main(int argc, char** argv)
 {
@@ -13,12 +18,18 @@ int main(int argc, char** argv)
 
     auto node = std::make_shared<rclcpp::Node>("panda_skills_server");
 
-    // 两个技能共享同一份执行器
-    auto manipulator = std::make_shared<ManipulatorExecutor>(node);
-    auto perception  = std::make_shared<PerceptionExecutor>(node);
+    // 所有的子技能共享同一份执行器
+    auto manipulator_executor = std::make_shared<ManipulatorExecutor>(node);
+    auto perception_executor = std::make_shared<PerceptionExecutor>(node);
+    auto grasp_feasibility_filter = std::make_shared<GraspFeasibilityFilter>(node);
+    auto task_executor = std::make_shared<TaskExecutor>(node, manipulator_executor, perception_executor);
 
-    MoveHomeServer move_home(node, manipulator);
-    GetObjectCenterServer get_center(node, perception);
+    GetObjectCenterServer get_object_center(node, perception_executor);
+    PreparePickSceneServer prepare_pick_scene(node, manipulator_executor);
+    CleanUpPickSceneServer cleanup_pick_scene(node, manipulator_executor);
+    GetFusionCloudServer get_fusion_cloud(node, task_executor);
+    GetJointValuesServer get_joint_value(node, manipulator_executor);
+    FilterGraspsServer filter_grasps(node, grasp_feasibility_filter);
 
     rclcpp::executors::MultiThreadedExecutor executor;
     executor.add_node(node);

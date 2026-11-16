@@ -5,12 +5,13 @@ int32 INTERNAL = 2                        # 意料之外的失败
 int32 SKILL_FAILED = 3                    # 简单技能通用失败(回 home / 清理场景等)
 
 # 相机感知阶段错误码
-int32 PERCEPTION_NO_DATA     = 100        # 没有点云
-int32 PERCEPTION_NO_OBJECT   = 101        # 点云识别后没有物体
+int32 PERCEPTION_NO_DATA       = 100      # 没有点云
+int32 PERCEPTION_NO_OBJECT     = 101      # 点云识别后没有物体
+int32 PERCEPTION_FUSION_FAILED = 102      # 多次尝试后点云融合仍然失败
 
 # GraspNet 推理阶段错误码
 int32 GRASPNET_SERVER_UNAVAILABLE = 200   # 无法与 GraspNet 推理服务器进行正常交互
-int32 GRASPNET_TIMEOUT            = 201   # GraspNet 推理超时
+int32 GRASPNET_EMPTY_CLOUD        = 201   # 输入 GraspNet 的点云为空 
 int32 GRASPNET_NO_CANDIDATES      = 202   # GraspNet 推理后没有获得候选抓取位姿
 int32 GRASPNET_FAILED             = 203   # GraspNet 推理失败
 

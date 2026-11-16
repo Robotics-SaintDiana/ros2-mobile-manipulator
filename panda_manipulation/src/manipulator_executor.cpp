@@ -274,17 +274,40 @@ bool ManipulatorExecutor::addBoxToScene(const std::string & box_id, geometry_msg
 
 // 向 Moveit 的规划场景中删除物体
 bool ManipulatorExecutor::removeObjectFromScene(const std::string & object_id) {
-    moveit_msgs::msg::CollisionObject objetc_to_remove;
-    objetc_to_remove.header.frame_id = "panda_link0";
-    objetc_to_remove.id = object_id;
+    // 1. 先尝试执行删除操作
+    moveit_msgs::msg::CollisionObject object_to_remove;
+    object_to_remove.header.frame_id = "panda_link0";
+    object_to_remove.id = object_id;
 
-    objetc_to_remove.operation = moveit_msgs::msg::CollisionObject::REMOVE;
-    return planning_scene_interface_->applyCollisionObject(objetc_to_remove);
+    object_to_remove.operation = moveit_msgs::msg::CollisionObject::REMOVE;
+    if (planning_scene_interface_->applyCollisionObject(object_to_remove)) return true;
+
+    // 2. 如果删除失败，那么检查需要删除的物体是否在规划场景中
+    const auto object = planning_scene_interface_->getObjects({object_id});
+    if (object.find(object_id) == object.end()) return true;
+
+    // 3. 如果物体还存在，那么说明删除失败
+    return false;
 }
 
 // 获取当前机械臂的所有关节角度状态
-std::vector<double> ManipulatorExecutor::getCurrentJointValues() {
-    return arm_group_->getCurrentJointValues();
+std::optional<std::vector<double>> ManipulatorExecutor::getCurrentJointValues() {
+    // 1. 先判断当前的 arm_group_ 是否可用
+    if (!arm_group_) return std::nullopt;
+
+    // 2. 获取当前的 RobotState，最多等待 1s
+    moveit::core::RobotStatePtr current_state = arm_group_->getCurrentState(1.0);
+    if (!current_state) return std::nullopt;
+
+    // 3. 获取规划组对应的关节值
+    const moveit::core::JointModelGroup* joint_model_group = current_state->getJointModelGroup(arm_group_->getName());
+    if (!joint_model_group) return std::nullopt;
+    std::vector<double> joint_values;
+    current_state->copyJointGroupPositions(joint_model_group, joint_values);
+
+    // 4. 简单校验结果是否为空
+    if (joint_values.empty()) return std::nullopt;
+    return joint_values;
 }
 
 // ----------------------------------------

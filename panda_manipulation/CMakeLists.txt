@@ -48,11 +48,19 @@ ament_target_dependencies(manipulator_task_server
 
 add_executable(
   robot_skills_server
+
   src/skill_server.cpp
   src/manipulator_executor.cpp
   src/perception_executor.cpp
-  src/skills/move_home_server.cpp
-  src/skills/get_object_center.cpp
+  src/grasp_feasibility_filter.cpp
+  src/task_executor.cpp
+
+  src/skills/get_object_center_server.cpp
+  src/skills/prepare_pick_scene_server.cpp
+  src/skills/cleanup_pick_scene_server.cpp
+  src/skills/get_fusion_cloud_server.cpp
+  src/skills/get_joint_values_server.cpp
+  src/skills/filter_grasps_server.cpp
 )
 
 target_compile_features(robot_skills_server PUBLIC cxx_std_17)

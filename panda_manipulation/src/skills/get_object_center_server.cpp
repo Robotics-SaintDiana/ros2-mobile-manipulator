@@ -1,6 +1,6 @@
 #include <thread>
 #include <utility> 
-#include "panda_manipulation/skills/get_object_center.hpp"
+#include "panda_manipulation/skills/get_object_center_server.hpp"
 #include <robot_manipulation_msgs/msg/error_code.hpp>
 
 using ErrorCode = robot_manipulation_msgs::msg::ErrorCode;
@@ -29,7 +29,7 @@ rclcpp_action::CancelResponse GetObjectCenterServer::handle_cancel(std::shared_p
     return rclcpp_action::CancelResponse::ACCEPT;
 }
 
-// 
+// 目标被接受后的回调
 void GetObjectCenterServer::handle_accepted(std::shared_ptr<GoalHandle> goal_handle) {
     // 另外开一个线程执行机械臂的运动，防止堵塞主线程
     std::thread([this, goal_handle]() { 
@@ -37,7 +37,6 @@ void GetObjectCenterServer::handle_accepted(std::shared_ptr<GoalHandle> goal_han
     }).detach();
 }
 
-// 
 void GetObjectCenterServer::execute(std::shared_ptr<GoalHandle> goal_handle) {
     // 构造服务器返回的结果和反馈(依据自定义的 action 消息)
     auto result = std::make_shared<GetObjectCenter::Result>();

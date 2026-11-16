@@ -12,6 +12,7 @@ find_package(robot_manipulation_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+find_package(nav2_msgs REQUIRED)
 
 find_package(behaviortree_cpp_v3 REQUIRED)
 if(TARGET behaviortree_cpp_v3::behaviortree_cpp_v3)
@@ -27,8 +28,13 @@ endif()
 include_directories(include)
 
 add_library(bt_nodes SHARED
-  src/nodes/move_home.cpp
   src/nodes/get_object_center.cpp
+  src/nodes/prepare_pick_scene.cpp
+  src/nodes/cleanup_pick_scene.cpp
+  src/nodes/get_fusion_cloud.cpp
+  src/nodes/infer_grasps.cpp
+  src/nodes/get_joint_values.cpp
+  src/nodes/filter_grasps.cpp
 )
 
 target_compile_features(bt_nodes PUBLIC cxx_std_17)
@@ -43,6 +49,7 @@ ament_target_dependencies(bt_nodes
   robot_manipulation_msgs
   geometry_msgs
   sensor_msgs
+  nav2_msgs
 )
 
 add_executable(bt_manager_node src/bt_manager_node.cpp)
@@ -63,7 +70,7 @@ install(TARGETS bt_manager_node bt_nodes
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
-install(DIRECTORY behavior_trees launch config
+install(DIRECTORY behavior_trees
   DESTINATION share/${PROJECT_NAME}
 )
 

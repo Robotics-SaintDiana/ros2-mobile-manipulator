@@ -1,8 +1,16 @@
 <root main_tree_to_execute="PickAndPlace">
   <BehaviorTree ID="PickAndPlace">
     <Sequence>
-      <GetObjectCenter object_pose="{object_pose}" error_code="{error_code}"/>
-      <MoveHome/>
+      <NavigateToPose x="0.0" y="4.7" yaw="1.57"/>
+      <RetryUntilSuccessful num_attempts="3" name="retry_perceive">
+        <GetObjectCenter object_pose="{object_pose}" error_code="{error_code}"/>
+      </RetryUntilSuccessful>
+      <PreparePickScene object_pose="{object_pose}"/>
+      <GetFusionCloud object_pose="{object_pose}" fusion_cloud="{fusion_cloud}" error_code="{error_code}"/>
+      <InferGrasps fusion_cloud="{fusion_cloud}" grasp_poses="{grasp_poses}" scores="{scores}" widths="{widths}" error_code="{error_code}"/>
+      <GetJointValues joint_values="{joint_values}"/>
+      <FilterGrasps grasp_poses="{grasp_poses}" scores="{scores}" widths="{widths}" object_pose="{object_pose}" joint_values="{joint_values}" filter_poses="filter_poses" filter_scores="filter_scores"/>
+      <CleanUpPickScene/>
     </Sequence>
   </BehaviorTree>
 </root>

@@ -1,0 +1,16 @@
+# Goal
+geometry_msgs/PoseStamped[] candidates
+float32[] scores
+float32[] widths
+float64[] joint_values
+geometry_msgs/PoseStamped object_pose
+---
+# Result
+bool success
+string message
+int32 error_code
+geometry_msgs/PoseStamped[] filter_poses
+float64[] filter_scores
+---
+# Feedback
+string stage

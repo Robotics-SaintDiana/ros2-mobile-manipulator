@@ -18,8 +18,13 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/GenerateGrasps.action"
   "action/InferGrasps.action"
 
-  "action/MoveHome.action"
   "action/GetObjectCenter.action"
+  "action/PreparePickScene.action"
+  "action/CleanupPickScene.action"
+  "action/GetFusionCloud.action"
+  "action/GetJointValues.action"
+  "action/FilterGrasps.action"
+  
   DEPENDENCIES action_msgs geometry_msgs std_msgs sensor_msgs
 )
 

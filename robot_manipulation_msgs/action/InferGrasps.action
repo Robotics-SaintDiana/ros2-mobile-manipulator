@@ -4,6 +4,7 @@ sensor_msgs/PointCloud2 cloud
 # Result
 bool success
 string message
+int32 error_code
 geometry_msgs/PoseStamped[] grasp_poses
 float32[] scores
 float32[] widths

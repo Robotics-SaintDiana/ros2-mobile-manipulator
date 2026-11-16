@@ -1,0 +1,11 @@
+# Goal
+geometry_msgs/PoseStamped object_pose
+---
+# Result
+bool success
+string message
+int32 error_code
+sensor_msgs/PointCloud2 fusion_cloud
+---
+# Feedback
+string stage

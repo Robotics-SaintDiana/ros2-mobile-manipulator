@@ -1,0 +1,10 @@
+# Goal
+---
+# Result
+bool success
+string message
+int32 error_code
+float64[] joint_values
+---
+# Feedback
+string stage
