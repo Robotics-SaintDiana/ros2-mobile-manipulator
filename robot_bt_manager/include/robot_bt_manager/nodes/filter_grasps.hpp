@@ -11,7 +11,7 @@ class FilterGraspsNode : public RosActionNode<robot_manipulation_msgs::action::F
         FilterGraspsNode(const std::string& name,
                             const BT::NodeConfiguration& config,
                             rclcpp::Node::SharedPtr node)
-            : RosActionNode(name, config, node, "/filter/filter_grasps") {}
+            : RosActionNode(name, config, node, "/manipulator/filter_grasps") {}
 
         static BT::PortsList providedPorts();
 

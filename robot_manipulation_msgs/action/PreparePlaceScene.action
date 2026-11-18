@@ -1,0 +1,10 @@
+# Goal
+geometry_msgs/PoseStamped plate_pose
+---
+# Result
+bool success
+string message
+int32 error_code
+---
+# Feedback
+string stage

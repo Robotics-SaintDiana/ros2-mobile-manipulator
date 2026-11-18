@@ -1,16 +1,31 @@
 <root main_tree_to_execute="PickAndPlace">
   <BehaviorTree ID="PickAndPlace">
     <Sequence>
-      <NavigateToPose x="0.0" y="4.7" yaw="1.57"/>
-      <RetryUntilSuccessful num_attempts="3" name="retry_perceive">
+      <!-- 先导航至抓取位置处 -->
+      <NavigateToPose nav2_position="{pick_position}"/>
+
+      <!-- Pick 流程 -->
+      <RetryUntilSuccessful num_attempts="3" name="retry_object_perceive">
         <GetObjectCenter object_pose="{object_pose}" error_code="{error_code}"/>
       </RetryUntilSuccessful>
       <PreparePickScene object_pose="{object_pose}"/>
       <GetFusionCloud object_pose="{object_pose}" fusion_cloud="{fusion_cloud}" error_code="{error_code}"/>
       <InferGrasps fusion_cloud="{fusion_cloud}" grasp_poses="{grasp_poses}" scores="{scores}" widths="{widths}" error_code="{error_code}"/>
       <GetJointValues joint_values="{joint_values}"/>
-      <FilterGrasps grasp_poses="{grasp_poses}" scores="{scores}" widths="{widths}" object_pose="{object_pose}" joint_values="{joint_values}" filter_poses="filter_poses" filter_scores="filter_scores"/>
+      <FilterGrasps grasp_poses="{grasp_poses}" scores="{scores}" widths="{widths}" object_pose="{object_pose}" joint_values="{joint_values}" filter_poses="{filter_poses}" filter_scores="{filter_scores}" error_code="{error_code}"/>
+      <ExecuteGrasp filter_poses="{filter_poses}" error_code="{error_code}"/>
       <CleanUpPickScene/>
+
+      <!-- 抓取完成后导航至放置位置处 -->
+      <NavigateToPose nav2_position="{place_position}"/>
+
+      <!-- Place 过程 -->
+      <RetryUntilSuccessful num_attempts="3" name="retry_object_perceive">
+        <GetPlatePosition plate_color="{plate_color}" place_pose="{place_pose}" error_code="{error_code}"/>
+      </RetryUntilSuccessful>
+      <PreparePlaceScene place_pose="{place_pose}"/>
+      <ExecutePlace place_pose="{place_pose}" error_code="{error_code}"/>
+      <CleanUpPlaceScene/>
     </Sequence>
   </BehaviorTree>
 </root>

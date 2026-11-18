@@ -16,7 +16,7 @@
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>ament_index_cpp</depend>
-  <depend>nav2_msg</depend>
+  <depend>nav2_msgs</depend>
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>

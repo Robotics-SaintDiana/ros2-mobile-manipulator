@@ -23,30 +23,6 @@ find_package(tf2_eigen REQUIRED)
 include_directories(include)
 
 add_executable(
-  manipulator_task_server
-  src/manipulator_task_server.cpp
-  src/manipulator_executor.cpp
-  src/perception_executor.cpp
-  src/grasp_feasibility_filter.cpp
-)
-
-target_compile_features(manipulator_task_server PUBLIC cxx_std_17)
-
-ament_target_dependencies(manipulator_task_server
-  rclcpp
-  rclcpp_action
-  robot_manipulation_msgs
-  sensor_msgs
-  geometry_msgs
-  std_msgs
-  pcl_conversions
-  pcl_ros
-  tf2
-  tf2_geometry_msgs
-  moveit_ros_planning_interface
-)
-
-add_executable(
   robot_skills_server
 
   src/skill_server.cpp
@@ -61,6 +37,11 @@ add_executable(
   src/skills/get_fusion_cloud_server.cpp
   src/skills/get_joint_values_server.cpp
   src/skills/filter_grasps_server.cpp
+  src/skills/execute_grasp_server.cpp
+  src/skills/get_plate_position_server.cpp
+  src/skills/prepare_place_scene_server.cpp
+  src/skills/cleanup_place_scene_server.cpp
+  src/skills/execute_place_server.cpp
 )
 
 target_compile_features(robot_skills_server PUBLIC cxx_std_17)
@@ -82,7 +63,7 @@ ament_target_dependencies(
 )
 
 install(
-  TARGETS manipulator_task_server robot_skills_server
+  TARGETS robot_skills_server
   DESTINATION lib/${PROJECT_NAME}
 )
 

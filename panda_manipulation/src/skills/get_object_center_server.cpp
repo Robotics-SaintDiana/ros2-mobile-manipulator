@@ -4,7 +4,7 @@
 #include <robot_manipulation_msgs/msg/error_code.hpp>
 
 using ErrorCode = robot_manipulation_msgs::msg::ErrorCode;
-using GetObjectCenterStatus = PerceptionExecutor::GetObjectCenterStatus;
+using PerceptionStatus = PerceptionExecutor::PerceptionStatus;
 
 // 初始化函数
 GetObjectCenterServer::GetObjectCenterServer(rclcpp::Node::SharedPtr node,
@@ -48,18 +48,18 @@ void GetObjectCenterServer::execute(std::shared_ptr<GoalHandle> goal_handle) {
 
     // 调用执行器获取物体的中心位置
     geometry_msgs::msg::PoseStamped object_pose;
-    GetObjectCenterStatus task_result = executor_->getObjectCenterPositionOnce(object_pose);
+    PerceptionStatus task_result = executor_->getObjectCenterPosition(object_pose);
             
     // 根据返回的状态向客户端返回结果
     auto transferErrorCode = [&task_result]() {
         switch (task_result) {
-            case GetObjectCenterStatus::SUCCESS:
+            case PerceptionStatus::SUCCESS:
                 return ErrorCode::SUCCESS;
 
-            case GetObjectCenterStatus::NO_DATA:
+            case PerceptionStatus::NO_DATA:
                 return ErrorCode::PERCEPTION_NO_DATA;
 
-            case GetObjectCenterStatus::NO_OBJECT:
+            case PerceptionStatus::NO_OBJECT:
                 return ErrorCode::PERCEPTION_NO_OBJECT;
 
             default:

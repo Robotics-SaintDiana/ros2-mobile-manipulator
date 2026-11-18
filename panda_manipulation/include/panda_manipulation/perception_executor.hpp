@@ -18,19 +18,18 @@ class PerceptionExecutor
         // 构造函数
         explicit PerceptionExecutor(const rclcpp::Node::SharedPtr& node);
 
-        // getObjectCenterPosition 函数中可能返回的状态码
-        enum class GetObjectCenterStatus {SUCCESS, NO_DATA, NO_OBJECT, PCL_FAILED, GET_TF_FAILED};
+        // getObjectCenterPosition 和 getPlatePosition 函数中可能返回的状态码
+        enum class PerceptionStatus {SUCCESS, NO_COLOR, NO_DATA, NO_OBJECT, PCL_FAILED, GET_TF_FAILED};
 
         // 对外暴露的接口
         // 将手部相机在三个方向进行拍摄的点云数据进行融合
         sensor_msgs::msg::PointCloud2 getHandCameraFusionCloud(const std::vector<sensor_msgs::msg::PointCloud2>& camera_clouds);
 
         // 返回 pick 相机识别到的物体的中心位置
-        bool getObjectCenterPosition(geometry_msgs::msg::PoseStamped& object_pose);
-        GetObjectCenterStatus getObjectCenterPositionOnce(geometry_msgs::msg::PoseStamped& object_pose);
+        PerceptionStatus getObjectCenterPosition(geometry_msgs::msg::PoseStamped& object_pose);
         
         // 返回指定颜色托盘位置
-        bool getPlatePosition(const std::string& plate_color, geometry_msgs::msg::Pose& place_pose);
+        PerceptionStatus getPlatePosition(const std::string& plate_color, geometry_msgs::msg::PoseStamped& place_pose);
 
         // 返回相机最新处理好的点云数据
         bool getPickCameraLatestProcessedCloud(sensor_msgs::msg::PointCloud2& pick_camera_lastest_cloud, const rclcpp::Time & min_stamp);

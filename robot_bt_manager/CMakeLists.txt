@@ -35,6 +35,11 @@ add_library(bt_nodes SHARED
   src/nodes/infer_grasps.cpp
   src/nodes/get_joint_values.cpp
   src/nodes/filter_grasps.cpp
+  src/nodes/execute_grasp.cpp
+  src/nodes/get_plate_position.cpp
+  src/nodes/prepare_place_scene.cpp
+  src/nodes/cleanup_place_scene.cpp
+  src/nodes/execute_place.cpp
 )
 
 target_compile_features(bt_nodes PUBLIC cxx_std_17)
@@ -61,6 +66,7 @@ target_link_libraries(bt_manager_node bt_nodes)
 ament_target_dependencies(bt_manager_node
   rclcpp
   rclcpp_action
+  robot_manipulation_msgs
   ament_index_cpp
 )
 

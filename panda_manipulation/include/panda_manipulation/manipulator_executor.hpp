@@ -18,12 +18,16 @@ class ManipulatorExecutor
         // 构造函数
         explicit ManipulatorExecutor(const rclcpp::Node::SharedPtr& node);
 
+        // pickExecutor 和 placeExecutor 可能返回的状态码
+        enum class pickExecutorStatus {SUCCESS, INVALID_POSE, MOVE_FAILED, NO_POSITION, NO_OBJECT, LIFT_FAILED};
+        enum class placeExecutorStatus {SUCCESS, INVALID_POSE, MOVE_FAILED, NO_POSITION, OBJECT_FALL, NOT_IN_PLATE};
+
         // 对外暴露接口
         // 从物料台上抓取物体
-        bool pickExecutor(const geometry_msgs::msg::PoseStamped& pick_pose);
+        pickExecutorStatus pickExecutor(const geometry_msgs::msg::PoseStamped& pick_pose);
 
         // 将物体放置在放置台上
-        bool placeExecutor(const geometry_msgs::msg::PoseStamped& place_pose);
+        placeExecutorStatus placeExecutor(const geometry_msgs::msg::PoseStamped& place_pose);
 
         // 控制机械臂运动至指定位姿处
         bool armMoveExecutor(const geometry_msgs::msg::PoseStamped& arm_pose);
@@ -101,8 +105,8 @@ class ManipulatorExecutor
         const double plate_thickness_ = 0.04;
         const double pick_table_size_x_ = 0.60;    
         const double pick_table_size_y_ = 0.60; 
-        const double place_table_size_x_ = 0.80;
-        const double place_table_size_y_ = 0.80;     
+        const double place_table_size_x_ = 0.40;
+        const double place_table_size_y_ = 0.40;     
         const double plate_size_ = 0.25;  
 }; 
 

@@ -17,17 +17,6 @@ def generate_launch_description():
     with open(kinematics_path, 'r') as f:
         kinematics = yaml.safe_load(f)
     
-    manipulator_server_node = Node(
-        package="panda_manipulation",
-        executable="manipulator_task_server",
-        output="screen",
-        parameters=[{
-            'use_sim_time': True,
-            'robot_description': robot_description,
-            'robot_description_kinematics': kinematics,
-        }]
-    )
-
     robot_skills_server_node = Node(
         package="panda_manipulation",
         executable="robot_skills_server",
@@ -39,4 +28,4 @@ def generate_launch_description():
         }]
     )
 
-    return LaunchDescription([manipulator_server_node, robot_skills_server_node])
+    return LaunchDescription([robot_skills_server_node])

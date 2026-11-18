@@ -1,0 +1,12 @@
+# Goal
+geometry_msgs/PoseStamped pick_position
+geometry_msgs/PoseStamped place_position
+string plate_color
+---
+# Result
+bool success
+string message
+int32 error_code
+---
+# Feedback
+string stage

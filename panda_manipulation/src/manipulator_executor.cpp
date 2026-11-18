@@ -41,16 +41,16 @@ ManipulatorExecutor::ManipulatorExecutor(const rclcpp::Node::SharedPtr& node) : 
 }
 
 // ----- 控制机械臂从物料台上按照指定位姿抓取物体 -----
-bool ManipulatorExecutor::pickExecutor(const geometry_msgs::msg::PoseStamped& pick_pose) {
+ManipulatorExecutor::pickExecutorStatus ManipulatorExecutor::pickExecutor(const geometry_msgs::msg::PoseStamped& pick_pose) {
     // 1. 先判断当前时刻机器人是否可用
     // if (!isRobotReady()) return false;
 
     // 2. 判断感知模块传入的抓取位姿是否合理，并转换到获得 Link0 坐标系下末端执行器 Link8 的位姿
     geometry_msgs::msg::PoseStamped pick_pose_link0;
-    if (!validateAndTransformPose(pick_pose, pick_pose_link0, "pick")) return false;
+    if (!validateAndTransformPose(pick_pose, pick_pose_link0, "pick")) return pickExecutorStatus::INVALID_POSE;
 
     // 3. 对转换后的抓取位姿进行有效性判断
-    if (!isPoseValidate(pick_pose_link0)) return false;
+    if (!isPoseValidate(pick_pose_link0)) return pickExecutorStatus::INVALID_POSE;
 
     // 4. 三段式抓取物体
     // 4.1 根据抓取位姿自身的姿态提取下探方向(TCP 下探方向为 Z 轴)
@@ -73,80 +73,82 @@ bool ManipulatorExecutor::pickExecutor(const geometry_msgs::msg::PoseStamped& pi
     const double pregrasp_above = 0.12;    // 预抓取：指尖悬在抓取点上方 12cm
 
     // 4.4 三段式第一段：先运动至物体上方安全距离处
-    if (!moveArmToPose(offset_along(pick_pose_link0, -hover_height), false)) return false;
+    if (!moveArmToPose(offset_along(pick_pose_link0, -hover_height), false)) return pickExecutorStatus::MOVE_FAILED;
 
     // 4.5 在悬停位置打开夹爪
-    if (!controlGripper(true)) return false;
+    if (!controlGripper(true)) return pickExecutorStatus::MOVE_FAILED;
 
     // 4.6 三段式第二段：直线下降到预抓取点
-    if (!moveArmToPose(offset_along(pick_pose_link0, -pregrasp_above), true)) return false;
+    if (!moveArmToPose(offset_along(pick_pose_link0, -pregrasp_above), true)) return pickExecutorStatus::MOVE_FAILED;
 
     // 4.7 三段式第三段：继续直线下降到真正的抓取点
     arm_group_->setMaxVelocityScalingFactor(0.1);
     arm_group_->setMaxAccelerationScalingFactor(0.1);
-    if (!moveArmToPose(pick_pose_link0, true)) return false;
+    if (!moveArmToPose(pick_pose_link0, true)) return pickExecutorStatus::MOVE_FAILED;
 
     // 5.1 获取此时物体的 Z 轴位置
     // 获取物体位置的原因是，仿真中比较难做到像实机中那样用 effort 来判定是否抓取住了物体
     // 参考如 robosuite 等开源项目中的常见做法，采用比较抓取前后物体在 Z 方向的位置来判定物体成功抓取
     geometry_msgs::msg::Point initial_pose;
-    if (!getObjectLatestPose(initial_pose)) return false;
+    if (!getObjectLatestPose(initial_pose)) return pickExecutorStatus::NO_POSITION;
 
     // 5.2 步进式关闭夹爪抓取物体
     // 采用该方法的原因为 GraspNet 输出的宽度并不是物体的实际宽度，而完全闭合虽然也可以，但会导致夹爪的位置大幅度波动
     // 为了尽可能贴近实机的抓取思路，采用步进式抓取，当夹爪的位置不再随着指令减小时，认为抓取到了物体
-    if (!closeGripperStepwise()) return false;
+    if (!closeGripperStepwise()) return pickExecutorStatus::NO_OBJECT;
 
     // 6.1 先控制机械臂抬升一定距离，然后再沿抓取方向退回一定距离，防止物体和桌面挂蹭或碰撞
     geometry_msgs::msg::PoseStamped lift_target_pose = pick_pose_link0;
     lift_target_pose.pose.position.z += 0.05;
-    if (!moveArmToPose(lift_target_pose, true)) return false;
-    if (!moveArmToPose(offset_along(pick_pose_link0, -0.25), true)) return false;
+    if (!moveArmToPose(lift_target_pose, true)) return pickExecutorStatus::MOVE_FAILED;
+    if (!moveArmToPose(offset_along(pick_pose_link0, -0.25), true)) return pickExecutorStatus::MOVE_FAILED;
 
     // 6.2 回到 Home 位置，获取此时物体的 Z 轴位置进行判定
     arm_group_->setMaxVelocityScalingFactor(0.5);
     arm_group_->setMaxAccelerationScalingFactor(0.5);
-    if (!moveArmToJoints(home_joints)) return false;
+    if (!moveArmToJoints(home_joints)) return pickExecutorStatus::MOVE_FAILED;
 
     geometry_msgs::msg::Point lift_pose;
-    if (!getObjectLatestPose(lift_pose)) return false;
-    return lift_pose.z - initial_pose.z > 0.04;
+    if (!getObjectLatestPose(lift_pose)) return pickExecutorStatus::NO_POSITION;
+
+    if (lift_pose.z - initial_pose.z > 0.04) return pickExecutorStatus::SUCCESS;
+    else return pickExecutorStatus::LIFT_FAILED;
 }
 
 // ----- 控制机械臂向放置台上放置物体 -----
-bool ManipulatorExecutor::placeExecutor(const geometry_msgs::msg::PoseStamped& place_pose) {
+ManipulatorExecutor::placeExecutorStatus ManipulatorExecutor::placeExecutor(const geometry_msgs::msg::PoseStamped& place_pose) {
     // 1. 先判断当前时刻机器人是否可用
     // if (!isRobotReady()) return false;
 
     // 2. 将感知模块传入的抓取位姿转换到 panda_link0 坐标系下
     geometry_msgs::msg::PoseStamped place_pose_link0;
-    if (!validateAndTransformPose(place_pose, place_pose_link0, "place")) return false;
+    if (!validateAndTransformPose(place_pose, place_pose_link0, "place")) return placeExecutorStatus::INVALID_POSE;
 
     // 3. 对转换后的抓取位姿进行有效性判断
-    if (!isPoseValidate(place_pose_link0)) return false;
+    if (!isPoseValidate(place_pose_link0)) return placeExecutorStatus::INVALID_POSE;
 
     // 4. 第一段：运动到托盘上方的悬停点
     geometry_msgs::msg::PoseStamped hover_pose = place_pose_link0;
     hover_pose.pose.position.z += 0.15;
-    if (!moveArmToPose(hover_pose)) return false;
+    if (!moveArmToPose(hover_pose)) return placeExecutorStatus::MOVE_FAILED;
 
     // 7. 第二段：沿着竖直方向直线下降到放置点
-    if (!descendArmStepwise(hover_pose)) return false;
+    if (!descendArmStepwise(hover_pose)) return placeExecutorStatus::OBJECT_FALL;
 
     // 8. 张开夹爪松开物体，等待物体稳定落下
-    if (!controlGripper(true)) return false;
+    if (!controlGripper(true)) return placeExecutorStatus::MOVE_FAILED;
  
     // 9. 第三段：竖直抬起 10cm，脱离托盘
     geometry_msgs::msg::PoseStamped retreat_pose = place_pose_link0;
     retreat_pose.pose.position.z += 0.10;
     arm_group_->setMaxVelocityScalingFactor(0.5);
     arm_group_->setMaxAccelerationScalingFactor(0.5);
-    if (!moveArmToPose(retreat_pose, true)) return false;
+    if (!moveArmToPose(retreat_pose, true)) return placeExecutorStatus::MOVE_FAILED;
 
     // 10. 回到 Home 姿态，并获取当前时刻物体的位姿
-    if (!moveArmToJoints(home_joints)) return false;
+    if (!moveArmToJoints(home_joints)) return placeExecutorStatus::MOVE_FAILED;
 
-    return true;
+    return placeExecutorStatus::SUCCESS;
 }
 
 // ----- 控制机械臂运动至指定位置 -----

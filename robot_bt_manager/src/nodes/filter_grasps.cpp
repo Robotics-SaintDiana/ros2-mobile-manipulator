@@ -3,7 +3,7 @@
 
 using ErrorCode = robot_manipulation_msgs::msg::ErrorCode;
 
-// 该节点会从黑板中读入 GraspNet 所有输出的评估结果,，以及机械臂当前的关节角度值,以及物体的中心位置
+// 该节点会从黑板中读入 GraspNet 所有输出的评估结果,以及机械臂当前的关节角度值,以及物体的中心位置
 // 该节点会向黑板中写入过滤后抓取位姿和分数,以及任务的错误码
 BT::PortsList FilterGraspsNode::providedPorts() {
     return {
@@ -19,7 +19,7 @@ BT::PortsList FilterGraspsNode::providedPorts() {
     };
 }
 
-// 该节点向服务端发送任务目标时需要从黑板中读取 GraspNet 所有输出的评估结果,，以及机械臂当前的关节角度值,以及物体的中心位置
+// 该节点向服务端发送任务目标时需要从黑板中读取 GraspNet 所有输出的评估结果,以及机械臂当前的关节角度值,以及物体的中心位置
 bool FilterGraspsNode::prepareGoal(Action::Goal& goal) {
     // 从黑板中依次读入数据
     auto grasp_poses = getInput<std::vector<geometry_msgs::msg::PoseStamped>>("grasp_poses");
@@ -37,6 +37,7 @@ bool FilterGraspsNode::prepareGoal(Action::Goal& goal) {
     goal.widths = *widths;
     goal.object_pose = *object_pose;
     goal.joint_values = *joint_values;
+    
     return true;
 }
 

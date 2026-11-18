@@ -15,9 +15,14 @@ def generate_launch_description():
         arguments=["hand_controller", "--controller-manager", "/controller_manager"],
     )
 
-    return LaunchDescription(
-        [
-            panda_arm_controller_spawner,
-            hand_controller_spawner,
-        ]
-    )
+    # joint_state_broadcaster_spawner = Node(
+    #     package="controller_manager",
+    #     executable="spawner",
+    #     arguments=["joint_state_broadcaster", "--controller-manager", "/controller_manager"],
+    # )
+
+    return LaunchDescription([
+        panda_arm_controller_spawner,
+        hand_controller_spawner,
+        # joint_state_broadcaster_spawner,
+    ])

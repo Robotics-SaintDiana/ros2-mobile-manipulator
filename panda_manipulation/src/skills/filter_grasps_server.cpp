@@ -11,7 +11,7 @@ FilterGraspsServer::FilterGraspsServer(rclcpp::Node::SharedPtr node,
     : node_(std::move(node)), executor_(std::move(executor))
 {
      server_ = rclcpp_action::create_server<FilterGrasps>(
-        node_, "/filter/filter_grasps",
+        node_, "/manipulator/filter_grasps",
         std::bind(&FilterGraspsServer::handle_goal, this, std::placeholders::_1, std::placeholders::_2),
         std::bind(&FilterGraspsServer::handle_cancel, this, std::placeholders::_1),
         std::bind(&FilterGraspsServer::handle_accepted, this, std::placeholders::_1)

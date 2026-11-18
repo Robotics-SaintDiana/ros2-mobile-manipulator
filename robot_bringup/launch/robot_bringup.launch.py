@@ -98,6 +98,15 @@ def generate_launch_description():
         output="screen",
     )
 
+    # ------------------- BT Manager Node -------------------
+    bt_manager_node = Node(
+        package="robot_bt_manager",
+        executable="bt_manager_node",
+        name="bt_manager_node",
+        output="screen",
+        parameters=[{"use_sim_time": True}],
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument(
             'use_sim_time',
@@ -112,4 +121,5 @@ def generate_launch_description():
         moveit_config_node,
         manipulator_server_node,
         graspnet_node,
+        bt_manager_node,
     ])

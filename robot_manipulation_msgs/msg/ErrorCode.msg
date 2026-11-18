@@ -19,12 +19,14 @@ int32 GRASPNET_FAILED             = 203   # GraspNet 推理失败
 int32 FILTER_NO_FEASIBLE = 300            # 过滤后没有符合要求的候选位姿
 
 # 抓取物体阶段错误码(Pick 阶段)
-int32 PICK_PLAN_FAILED       = 400        # 抓取过程中路径规划失败
-int32 PICK_GRASP_FAILED      = 401        # 抓取过程中夹爪没有抓取到物体
-int32 PICK_LIFT_CHECK_FAILED = 402        # 抓取后检测到物体没有正确抬升  
+int32 PICK_NO_POSITION       = 400        # 抓取过程中无法获得物体的 Z 轴数据
+int32 PICK_NO_OBJECT         = 401        # 抓取过程中夹爪没有抓取到物体
+int32 PICK_LIFT_FAILED       = 402        # 抓取后检测到物体没有正确抬升  
 
 # 放置物体阶段错误码(Place 阶段)
-int32 PLACE_PLAN_FAILED = 500             # 放置过程中路径规划失败
+int32 PLACE_NO_POSITION  = 500            # 放置过程中无法获得物体的 Z 轴数据
+int32 PLACE_OBJECT_FALL  = 501            # 放置过程中物体从夹爪中脱落  
+int32 PLACE_NOT_IN_PLATE = 502            # 物体没有成功放置到托盘中
 
 # 其他错误码
 int32 SCENE_PREPARE_FAILED = 601          # 向规划场景中增加物体失败

@@ -13,18 +13,24 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "action/ExecuteBTTask.action"  
   "msg/ErrorCode.msg"
-  "action/ManipulateObject.action"
-  "action/GenerateGrasps.action"
   "action/InferGrasps.action"
 
   "action/GetObjectCenter.action"
-  "action/PreparePickScene.action"
-  "action/CleanupPickScene.action"
   "action/GetFusionCloud.action"
   "action/GetJointValues.action"
   "action/FilterGrasps.action"
-  
+  "action/ExecuteGrasp.action"
+
+  "action/GetPlatePosition.action"
+  "action/ExecutePlace.action"
+
+  "action/PreparePickScene.action"
+  "action/CleanupPickScene.action"
+  "action/PreparePlaceScene.action"
+  "action/CleanupPlaceScene.action"
+
   DEPENDENCIES action_msgs geometry_msgs std_msgs sensor_msgs
 )
 
