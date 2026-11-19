@@ -22,6 +22,7 @@ def generate_launch_description():
             parameters=[{
                 'task_file': LaunchConfiguration('task_file'),
                 'waypoints_file': LaunchConfiguration('waypoints_file'),
+                'use_sim_time': True,
             }],
         ),
     ])

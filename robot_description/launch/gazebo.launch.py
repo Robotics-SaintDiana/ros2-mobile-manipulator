@@ -64,6 +64,7 @@ def generate_launch_description():
     gz_ros2_bridge = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
+        parameters=[{"use_sim_time": True}],
         arguments=[
             # --- 公共时钟 ---
             "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock",

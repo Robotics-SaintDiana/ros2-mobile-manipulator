@@ -1,0 +1,11 @@
+task_parser_node:
+  ros__parameters:
+    use_sim_time: true
+    base_url: "https://api.deepseek.com"
+    model: "deepseek-chat"
+    api_key_env: "DEEPSEEK_API_KEY"
+    temperature: 0.0
+    timeout_sec: 20.0
+    max_attempts: 3
+    colors: ["red", "green", "blue"]
+    waypoints_file: ""

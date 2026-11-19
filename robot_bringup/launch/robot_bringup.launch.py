@@ -107,6 +107,29 @@ def generate_launch_description():
         parameters=[{"use_sim_time": True}],
     )
 
+    # ------------------- Task Manager Node -------------------
+    task_manager_node = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory("robot_task_manager"),
+                "launch",
+                "task_manager.launch.py"
+            )
+        )
+    )
+
+    # ------------------- LLM Task Parser Node -------------------
+    # 启动 bringup 的终端需要先 source src/.env
+    task_parser_node = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory("robot_llm_task_parser"),
+                "launch",
+                "task_parser.launch.py"
+            )
+        )
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument(
             'use_sim_time',
@@ -122,4 +145,6 @@ def generate_launch_description():
         manipulator_server_node,
         graspnet_node,
         bt_manager_node,
+        task_manager_node,
+        task_parser_node
     ])
